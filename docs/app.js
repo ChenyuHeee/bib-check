@@ -284,6 +284,39 @@ const ANON_PATTERNS = [
 ];
 const DOI_RE = /^(https?:\/\/(dx\.)?doi\.org\/)?10\.\d{4,}\/[^\s]+$/i;
 
+// Count `{` vs `}` in a title field, ignoring escaped \{ \}.
+function countBraces(s) {
+  const t = (s || "").replace(/\\[{}]/g, "");
+  return [(t.match(/\{/g) || []).length, (t.match(/\}/g) || []).length];
+}
+
+// Heuristic: is an author rendered as initials only? "Z. Li" / "L Zheng" /
+// "Li, Z." — these are the OpenAlex/Crossref truncations the user complained
+// about (e.g. "Zhuohan Li" -> "Z. Li").
+function isTruncatedName(name) {
+  const s = (name || "").trim();
+  if (!s) return false;
+  if (/^[A-Z]\.?\s+[A-Z][a-zA-Z\-']+$/.test(s)) return true;        // "Z. Li" or "L Zheng"
+  if (/^[A-Z]\.?\s+[A-Z]\.?\s+[A-Z][a-zA-Z\-']+$/.test(s)) return true; // "J. M. Smith"
+  if (/^[A-Z][a-zA-Z\-']+,\s*[A-Z]\.?(\s+[A-Z]\.?)*\s*$/.test(s)) return true; // "Li, Z."
+  return false;
+}
+function hasTruncatedAuthors(authorStr) {
+  return splitAuthors(authorStr || "").some(isTruncatedName);
+}
+
+// "Trusted" entry: hand-curated or DBLP-sourced. Used to suppress aggressive
+// merges from OpenAlex/Crossref aggregators.
+function entryIsTrusted(entry) {
+  const f = entry.fields || {};
+  if ((f.bibsource || "").toLowerCase().includes("dblp")) return true;
+  if ((f.biburl || "").toLowerCase().includes("dblp.org")) return true;
+  const authors = splitAuthors(f.author || "");
+  // Multi-author entry with full first names = looks curated.
+  if (authors.length >= 3 && !hasTruncatedAuthors(f.author || "")) return true;
+  return false;
+}
+
 function detectIssues(entry) {
   const issues = [];
   const f = entry.fields;
@@ -297,8 +330,7 @@ function detectIssues(entry) {
   }
   if (!f.title) issues.push({ severity: "error", field: "title", message: "missing title" });
   else {
-    const open = (f.title.match(/\{/g) || []).length;
-    const close = (f.title.match(/\}/g) || []).length;
+    const [open, close] = countBraces(f.title);
     if (open !== close) {
       issues.push({ severity: "error", field: "title", message: `unbalanced braces in title (${open} '{' vs ${close} '}')` });
     }
@@ -338,7 +370,14 @@ function detectIssues(entry) {
   const venue = (f.booktitle || f.journal || "").trim();
   if (!venue) issues.push({ severity: "error", field: "venue", message: "missing booktitle/journal" });
   else if (looksLikeArxiv(venue)) {
-    issues.push({ severity: "warning", field: "journal", message: `venue looks like a preprint server ('${venue}'); search for the published version` });
+    // Refined: only flag as preprint if it really lacks publication-specific
+    // metadata. An @inproceedings entry whose journal/booktitle includes
+    // arXiv but also has booktitle/pages/etc. is just a citation style choice.
+    const isBareArticle = entry.entryType === "article"
+      && !f.booktitle && !f.volume && !f.pages && !f.publisher;
+    if (isBareArticle) {
+      issues.push({ severity: "warning", field: "journal", message: `venue looks like a preprint server ('${venue}'); search for the published version` });
+    }
   } else if (entry.entryType === "inproceedings" && looksAbbreviated(venue)) {
     if (expandVenueAcronym(venue) === venue) {
       issues.push({ severity: "warning", field: "booktitle", message: `booktitle may be abbreviated ('${venue}'); use full conference name` });
@@ -356,38 +395,128 @@ function detectIssues(entry) {
       issues.push({ severity: "warning", field: "booktitle", message: "venue appears to be in note/howpublished; move to booktitle/journal" });
     }
   }
-  // Entry-type inference vs declared type.
+  // Entry-type inference vs declared type. Only suggest changes when the
+  // declared type is generic (@misc) — never propose downgrading a richer type
+  // such as @inproceedings or @book to @article based on field shape alone.
   const declaredType = entry.entryType;
-  let inferred = null;
-  if (f.journal && !f.booktitle) inferred = "article";
-  else if (f.booktitle && !f.journal) inferred = "inproceedings";
-  if (inferred && declaredType && declaredType !== inferred && declaredType !== "misc") {
-    issues.push({ severity: "warning", field: null, message: `entry type @${declaredType} but fields suggest @${inferred}` });
+  if (declaredType === "misc") {
+    let inferred = null;
+    if (f.journal && !f.booktitle) inferred = "article";
+    else if (f.booktitle && !f.journal) inferred = "inproceedings";
+    if (inferred) {
+      issues.push({ severity: "info", field: null, message: `entry type @misc but fields suggest @${inferred}` });
+    }
   }
   if (f.doi && /^10\.5281\/zenodo\./i.test(f.doi.trim()) && declaredType !== "misc" && declaredType !== "dataset") {
     issues.push({ severity: "warning", field: null, message: `Zenodo DOI but type is @${declaredType}; consider @misc` });
   }
   if (f.title && /^proceedings of/i.test(f.title.trim()) && declaredType === "article") {
-    issues.push({ severity: "warning", field: null, message: `title starts with 'Proceedings of' but type is @article; consider @proceedings or @inproceedings` });
+    issues.push({ severity: "info", field: null, message: `title starts with 'Proceedings of' but type is @article; consider @proceedings or @inproceedings` });
   }
   return issues;
 }
 
+// Decide which author list to use when the original bib already has authors.
+// Hard rule: never silently drop authors. Never replace full names with
+// initials-only. Curated/DBLP entries always win.
+function pickAuthors(entry, scholarStr) {
+  const entryStr = entry.fields.author || "";
+  const entryAuthors = splitAuthors(entryStr);
+  const scholarAuthors = splitAuthors(scholarStr || "");
+  if (!entryAuthors.length) return { value: scholarStr || "", action: "filled" };
+  if (!scholarAuthors.length) return { value: entryStr, action: "kept" };
+  if (entryIsTrusted(entry)) return { value: entryStr, action: "kept" };
+  // Scholar has fewer authors → never overwrite.
+  if (scholarAuthors.length < entryAuthors.length) return { value: entryStr, action: "kept" };
+  // Scholar has any truncated name → keep entry (avoid "Z. Li" vs "Zhuohan Li").
+  if (scholarAuthors.some(isTruncatedName) && !entryAuthors.every(isTruncatedName)) {
+    return { value: entryStr, action: "kept" };
+  }
+  // Scholar strictly more authors with full names → replace.
+  if (scholarAuthors.length > entryAuthors.length) return { value: scholarStr, action: "replaced" };
+  // Equal count: prefer scholar only if it looks more complete (more total chars).
+  const entryLen = entryAuthors.join("").length;
+  const scholarLen = scholarAuthors.join("").length;
+  if (scholarLen > entryLen * 1.15 && !scholarAuthors.some(isTruncatedName)) {
+    return { value: scholarStr, action: "replaced" };
+  }
+  return { value: entryStr, action: "kept" };
+}
+
+// Decide which venue to use. Never overwrite an existing non-preprint venue
+// with a preprint-style scholar venue (the user's #1 complaint).
+function pickVenue(entry, scholar) {
+  const f = entry.fields;
+  const entryHasBooktitle = !!f.booktitle;
+  const entryHasJournal = !!f.journal;
+  const entryVenue = (f.booktitle || f.journal || "").trim();
+  const entryIsPreprintVenue = entryVenue && looksLikeArxiv(entryVenue);
+  const scholarVenue = (scholar?.venue || "").trim();
+  const scholarKind = scholar?.venueKind;
+  const scholarIsPreprintVenue = scholarVenue && looksLikeArxiv(scholarVenue);
+
+  // No entry venue: fill from scholar regardless (better something than nothing).
+  if (!entryHasBooktitle && !entryHasJournal && scholarVenue && scholarKind) {
+    return { kind: scholarKind, value: scholarVenue, action: "filled" };
+  }
+  // Entry has a non-preprint venue → never replace.
+  if (entryHasBooktitle || entryHasJournal) {
+    if (entryIsPreprintVenue && scholarVenue && !scholarIsPreprintVenue) {
+      return { kind: scholarKind, value: scholarVenue, action: "upgraded", from: entryVenue };
+    }
+    return { kind: entryHasBooktitle ? "booktitle" : "journal", value: entryVenue, action: "kept" };
+  }
+  return { kind: null, value: null, action: "none" };
+}
+
+// Fill-only rewrite: NEVER overwrite existing fields with lower-quality data.
+// Returns { text, additions, kept, blockedDowngrade } so the caller can decide
+// whether the suggested block is worth showing.
 function rewrite(entry, scholar) {
   const src = { ...entry.fields };
+  const additions = [];
+  const blocked = [];
   let scholarEntryType = null;
+
   if (scholar) {
-    for (const k of ["author", "title", "year", "volume", "number", "pages", "publisher"]) {
-      if (scholar[k]) src[k] = scholar[k];
+    // 1. AUTHOR
+    const a = pickAuthors(entry, scholar.author);
+    if (a.action === "filled" || a.action === "replaced") {
+      if (src.author && a.action === "filled") additions.push("author");
+      else if (a.action === "replaced") additions.push("author");
+      src.author = a.value;
+    } else if (scholar.author && a.action === "kept" && (entry.fields.author || "") !== scholar.author) {
+      blocked.push("author (kept original; scholar version was truncated or shorter)");
     }
-    if (scholar.venue && scholar.venueKind) {
-      const other = scholar.venueKind === "booktitle" ? "journal" : "booktitle";
-      src[scholar.venueKind] = scholar.venue;
-      delete src[other];
+    // 2. TITLE — only fill, never overwrite (user formatting / brace protection).
+    if (!src.title && scholar.title) { src.title = scholar.title; additions.push("title"); }
+    // 3. YEAR — only fill.
+    if (!src.year && scholar.year) { src.year = scholar.year; additions.push("year"); }
+    // 4. VENUE
+    const v = pickVenue(entry, scholar);
+    if (v.action === "filled") {
+      src[v.kind] = v.value;
+      additions.push(v.kind);
+    } else if (v.action === "upgraded") {
+      // Replace preprint with published venue. Drop the other field.
+      delete src.booktitle; delete src.journal;
+      src[v.kind] = v.value;
+      additions.push(`${v.kind} (upgraded from ${v.from})`);
+    } else if (v.action === "kept" && scholar.venue && scholar.venue.trim() !== (entry.fields.booktitle || entry.fields.journal || "").trim()) {
+      blocked.push(`venue (kept original; scholar suggested '${scholar.venue}')`);
+    }
+    // 5. vol/num/pages/publisher — only fill if missing AND scholar isn't preprint.
+    const scholarUseful = scholar.venue && !looksLikeArxiv(scholar.venue);
+    if (scholarUseful) {
+      for (const k of ["volume", "number", "pages", "publisher"]) {
+        if (!src[k] && scholar[k]) { src[k] = scholar[k]; additions.push(k); }
+      }
     }
     scholarEntryType = scholar.entryType ?? null;
   }
+
   for (const k of FORBIDDEN_FIELDS) delete src[k];
+  // Cosmetic normalization (always safe): expand standalone acronyms, format authors.
   if (src.booktitle) src.booktitle = expandVenueAcronym(src.booktitle);
   if (src.journal) src.journal = expandVenueAcronym(src.journal);
   if (src.author) src.author = normalizeAuthors(src.author);
@@ -396,11 +525,16 @@ function rewrite(entry, scholar) {
     if (src.volume && ARXIV_VOLUME_RE.test(src.volume)) delete src.volume;
     delete src.number; delete src.pages; delete src.publisher;
   }
-  let entryType;
-  if (["article", "inproceedings", "book", "incollection", "techreport"].includes(scholarEntryType)) entryType = scholarEntryType;
-  else if (src.booktitle && !src.journal) entryType = "inproceedings";
-  else if (src.journal && !src.booktitle) entryType = "article";
-  else entryType = entry.entryType;
+
+  // Entry type: NEVER downgrade. Only promote @misc -> something specific
+  // when we just filled in a venue; otherwise keep the user's declared type.
+  let entryType = entry.entryType;
+  if (entry.entryType === "misc") {
+    if (src.booktitle && !src.journal) entryType = "inproceedings";
+    else if (src.journal && !src.booktitle && !looksLikeArxiv(src.journal)) entryType = "article";
+    else if (scholarEntryType && ["article", "inproceedings", "book", "incollection", "techreport"].includes(scholarEntryType)) entryType = scholarEntryType;
+  }
+
   const order = entryType === "article"
     ? ["author", "title", "journal", "volume", "number", "pages", "year", "publisher"]
     : ["author", "title", "booktitle", "pages", "year", "address", "publisher", "organization"];
@@ -415,7 +549,7 @@ function rewrite(entry, scholar) {
   }
   if (lines[lines.length - 1].endsWith(",")) lines[lines.length - 1] = lines[lines.length - 1].slice(0, -1);
   lines.push("}");
-  return lines.join("\n");
+  return { text: lines.join("\n"), additions, blocked };
 }
 
 // ========== Title-match (token sort ratio) ==========
@@ -771,13 +905,21 @@ async function llmHallucinationCheck(entry, apiKey, model = "gpt-4o-mini") {
 
 // ========== Pipeline ==========
 
+// Session-wide tally of API failures so we can summarize once instead of
+// spamming a warning under every entry (the user's #3 complaint about S2).
+const _apiFailures = { openalex: 0, crossref: 0, s2: 0 };
+function _recordApiFailure(src, msg) {
+  _apiFailures[src] = (_apiFailures[src] || 0) + 1;
+  console.warn(`[bib-check] ${src} failure: ${msg}`);
+}
+
 async function auditOne(entry, opts) {
   const issues = detectIssues(entry);
+  const trusted = entryIsTrusted(entry);
   const title = entry.fields.title || "";
   const hint = entry.fields.author || "";
   let match = null, source = "none";
   let upgradedFrom = null;
-  const errors = [];
 
   // arXiv version freshness check (only if entry has an explicit version like v2).
   const arxivInfo = extractArxivId(entry);
@@ -790,12 +932,12 @@ async function auditOne(entry, opts) {
 
   if (title && opts.useOpenalex) {
     const r = await openalexLookup(title, hint);
-    if (r && r.__error) errors.push(`OpenAlex: ${r.__error}`);
+    if (r && r.__error) _recordApiFailure("openalex", r.__error);
     else if (r) { match = r; source = "openalex"; }
   }
   if (title && opts.useCrossref && (match === null || isPreprint(match))) {
     const cr = await crossrefLookup(title, hint);
-    if (cr && cr.__error) errors.push(`Crossref: ${cr.__error}`);
+    if (cr && cr.__error) _recordApiFailure("crossref", cr.__error);
     else if (cr && !isPreprint(cr)) {
       const score = tokenSortRatio(title, cr.title);
       if (score >= 92 || match === null) {
@@ -809,7 +951,7 @@ async function auditOne(entry, opts) {
   }
   if (title && opts.useS2 && (match === null || isPreprint(match))) {
     const s2 = await s2Lookup(title, hint, opts.s2Key);
-    if (s2 && s2.__error) errors.push(`Semantic Scholar: ${s2.__error}`);
+    if (s2 && s2.__error) _recordApiFailure("s2", s2.__error);
     else if (s2) {
       const score = tokenSortRatio(title, s2.title);
       // Accept S2 if no match yet, or if it's a non-preprint upgrade.
@@ -822,7 +964,7 @@ async function auditOne(entry, opts) {
       }
     }
   }
-  for (const e of errors) issues.push({ severity: "warning", field: null, message: e });
+  // (API failures are tracked silently in _apiFailures and surfaced in renderSummary.)
 
   // Author-diff vs match (count / membership / order). Differences are
   // classified by similarity so cosmetic deviations don't raise false alarms.
@@ -873,8 +1015,20 @@ async function auditOne(entry, opts) {
     venueKind: match.venueKind,
     entryType: match.entryType,
   } : null;
-  const rewritten = rewrite(entry, scholar);
-  return { entry, issues, match, source, rewritten, upgradedFrom };
+  const r = rewrite(entry, scholar);
+  // Surface blocked downgrades as info-level notes so the user knows why the
+  // suggested block didn't change a particular field.
+  for (const reason of r.blocked) {
+    issues.push({ severity: "info", field: null, message: `kept original: ${reason}` });
+  }
+  return {
+    entry, issues, match, source,
+    rewritten: r.text,
+    additions: r.additions,
+    blocked: r.blocked,
+    trusted,
+    upgradedFrom,
+  };
 }
 
 function extractAuthorLastnames(authorsStr) {
@@ -961,13 +1115,14 @@ function renderEntry(a) {
   const warns = a.issues.filter(i => i.severity === "warning").length;
   const infos = a.issues.filter(i => i.severity === "info").length;
   const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning" || i.severity === "info");
+  const hasChanges = (a.additions && a.additions.length > 0) || (e.raw.trim() !== a.rewritten);
   const badges = [];
   badges.push(`<span class="badge src-${a.source}">${a.source}</span>`);
+  if (a.trusted) badges.push(`<span class="badge trusted" title="entry looks curated (DBLP source or full author names); aggregator data is only used to fill missing fields">trusted</span>`);
   if (a.upgradedFrom) badges.push(`<span class="badge upgraded" title="upgraded from ${escapeHtml(a.upgradedFrom)}">upgraded</span>`);
   if (errs) badges.push(`<span class="badge err">${errs} err</span>`);
   if (warns) badges.push(`<span class="badge warn">${warns} warn</span>`);
   if (!errs && !warns) badges.push(`<span class="badge ok">clean</span>`);
-  const { renderOld, renderNew } = diffLines(e.raw.trim(), a.rewritten);
   const unified = renderUnifiedDiff(e.raw.trim(), a.rewritten);
   const scholarUrl = scholarSearchURL(e);
   const matchHtml = a.match ? `
@@ -992,6 +1147,16 @@ function renderEntry(a) {
       <h4>Match</h4>
       <p style="color:var(--muted)">No match found. Try <a href="${scholarUrl}" target="_blank" rel="noopener">Google Scholar search →</a></p>
     </div>`;
+  const diffSection = hasChanges ? `
+        <div class="section">
+          <h4>Diff (original → suggested)${a.additions && a.additions.length ? ` <span style="color:var(--muted);font-weight:normal">filled: ${escapeHtml(a.additions.join(", "))}</span>` : ""} <button class="copy-btn" data-copy="suggested">Copy suggested</button></h4>
+          ${unified}
+          <pre class="bib hidden" data-suggested>${escapeHtml(a.rewritten)}</pre>
+        </div>` : `
+        <div class="section">
+          <h4>Suggested</h4>
+          <p style="color:var(--muted)">No changes — original entry already complete (and not downgraded by aggregator data).</p>
+        </div>`;
   return `
     <article class="entry" data-key="${escapeHtml(e.citeKey)}">
       <div class="head">
@@ -1001,11 +1166,7 @@ function renderEntry(a) {
       <div class="body">
         ${issuesHtml}
         ${matchSection}
-        <div class="section">
-          <h4>Diff (original → suggested) <button class="copy-btn" data-copy="suggested">Copy suggested</button></h4>
-          ${unified}
-          <pre class="bib hidden" data-suggested>${escapeHtml(a.rewritten)}</pre>
-        </div>
+        ${diffSection}
       </div>
     </article>`;
 }
@@ -1017,14 +1178,26 @@ function renderSummary(audited) {
   const s2 = audited.filter(a => a.source === "s2").length;
   const none = audited.filter(a => a.source === "none").length;
   const clean = audited.filter(a => !a.issues.some(i => i.severity === "error" || i.severity === "warning")).length;
+  const errs = audited.filter(a => a.issues.some(i => i.severity === "error")).length;
+  const trusted = audited.filter(a => a.trusted).length;
   $("#summary").classList.remove("hidden");
-  $("#summary").innerHTML = `
+  let html = `
     <div class="card"><div class="n">${total}</div><div class="l">total</div></div>
     <div class="card"><div class="n" style="color:var(--good)">${clean}</div><div class="l">clean</div></div>
+    <div class="card"><div class="n" style="color:var(--bad)">${errs}</div><div class="l">with errors</div></div>
+    <div class="card"><div class="n" style="color:var(--info,#58a6ff)">${trusted}</div><div class="l">trusted</div></div>
     <div class="card"><div class="n" style="color:var(--accent)">${oa}</div><div class="l">via OpenAlex</div></div>
     <div class="card"><div class="n" style="color:var(--good)">${cr}</div><div class="l">via Crossref</div></div>
     <div class="card"><div class="n" style="color:var(--warn)">${s2}</div><div class="l">via S2</div></div>
     <div class="card"><div class="n" style="color:var(--bad)">${none}</div><div class="l">unmatched</div></div>`;
+  const apiNotes = [];
+  if (_apiFailures.openalex) apiNotes.push(`OpenAlex failed ${_apiFailures.openalex}×`);
+  if (_apiFailures.crossref) apiNotes.push(`Crossref failed ${_apiFailures.crossref}×`);
+  if (_apiFailures.s2) apiNotes.push(`Semantic Scholar failed ${_apiFailures.s2}× (silenced; check console)`);
+  if (apiNotes.length) {
+    html += `<div class="card api-notes" style="grid-column:1/-1"><div class="l" style="text-align:left">API issues: ${apiNotes.join(" · ")}</div></div>`;
+  }
+  $("#summary").innerHTML = html;
 }
 
 function setStatus(msg, pct) {
@@ -1059,6 +1232,8 @@ async function runAudit() {
   };
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
+  // Reset session-level API failure counters.
+  _apiFailures.openalex = 0; _apiFailures.crossref = 0; _apiFailures.s2 = 0;
 
   // Cross-entry duplicate detection (by normalized title) over the full file.
   const dupGroups = new Map();
@@ -1111,6 +1286,9 @@ function saveState(bibText, opts, audited) {
         source: a.source,
         rewritten: a.rewritten,
         upgradedFrom: a.upgradedFrom,
+        additions: a.additions || [],
+        blocked: a.blocked || [],
+        trusted: !!a.trusted,
       })),
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
@@ -1164,7 +1342,12 @@ function download(name, text, mime = "text/plain") {
 }
 
 function buildBib(audited) {
-  return audited.map(a => a.rewritten).join("\n\n") + "\n";
+  // Only emit entries where we actually have something better than the
+  // original. Otherwise re-emit the user's original verbatim.
+  return audited.map(a => {
+    const hasChanges = (a.additions && a.additions.length) || (a.entry.raw.trim() !== a.rewritten);
+    return hasChanges ? a.rewritten : a.entry.raw.trim();
+  }).join("\n\n") + "\n";
 }
 
 function buildJson(audited) {
@@ -1181,10 +1364,33 @@ function buildJson(audited) {
 }
 
 function buildMarkdown(audited) {
-  const lines = ["# bib-check report", ""];
+  // Top-summary so users can scan instead of paging through every entry.
+  const total = audited.length;
+  const errs = audited.filter(a => a.issues.some(i => i.severity === "error")).length;
+  const warns = audited.filter(a => a.issues.some(i => i.severity === "warning")).length;
+  const unmatched = audited.filter(a => a.source === "none").length;
+  const trusted = audited.filter(a => a.trusted).length;
+  const lines = [
+    "# bib-check report", "",
+    `**Summary**: ${total} entries · ${errs} with errors · ${warns} with warnings · ${unmatched} unmatched · ${trusted} marked trusted`,
+    "",
+  ];
+  // Errors-first table for quick triage.
+  const errEntries = audited.filter(a => a.issues.some(i => i.severity === "error"));
+  if (errEntries.length) {
+    lines.push("## ❌ Errors (must fix)", "", "| cite key | line | issue |", "|---|---|---|");
+    for (const a of errEntries) {
+      for (const i of a.issues.filter(x => x.severity === "error")) {
+        lines.push(`| \`${a.entry.citeKey}\` | ${a.entry.lineNumber} | ${i.field ? `\`${i.field}\`: ` : ""}${i.message.replace(/\|/g, "\\|")} |`);
+      }
+    }
+    lines.push("");
+  }
+  lines.push("## Detail", "");
   for (const a of audited) {
     const e = a.entry;
-    lines.push(`## [${e.index}] \`${e.citeKey}\` (line ${e.lineNumber}) — source: ${a.source}`, "");
+    const trustedBadge = a.trusted ? " · _trusted_" : "";
+    lines.push(`### [${e.index}] \`${e.citeKey}\` (line ${e.lineNumber}) — source: ${a.source}${trustedBadge}`, "");
     const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning" || i.severity === "info");
     if (visible.length) {
       lines.push("**Issues**");
@@ -1197,7 +1403,14 @@ function buildMarkdown(audited) {
     if (a.match) {
       lines.push("**Match**", `- title: ${a.match.title}`, `- authors: ${a.match.authors?.join(", ") || "(none)"}`, `- year: ${a.match.year ?? "?"}`, `- venue: ${a.match.venue || "?"} (${a.match.venueKind || "?"})`, `- vol/num/pages: ${a.match.volume || "-"} / ${a.match.number || "-"} / ${a.match.pages || "-"}`, "");
     }
-    lines.push("**Original**", "```bibtex", e.raw.trim(), "```", "", "**Suggested**", "```bibtex", a.rewritten, "```", "");
+    const hasChanges = (a.additions && a.additions.length) || (e.raw.trim() !== a.rewritten);
+    lines.push("**Original**", "```bibtex", e.raw.trim(), "```", "");
+    if (hasChanges) {
+      const note = a.additions && a.additions.length ? ` _(filled: ${a.additions.join(", ")})_` : "";
+      lines.push(`**Suggested**${note}`, "```bibtex", a.rewritten, "```", "");
+    } else {
+      lines.push("_Suggested: no changes — original entry already complete._", "");
+    }
   }
   return lines.join("\n");
 }
