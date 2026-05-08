@@ -2,6 +2,18 @@
 // Sources: OpenAlex (api.openalex.org) + Crossref (api.crossref.org). Both
 // support CORS. No proxy needed.
 
+// Surface module-load / runtime errors so a silent failure (e.g. a stale
+// cached HTML missing a referenced element) is visible instead of leaving
+// buttons unresponsive.
+window.addEventListener("error", e => {
+  const s = document.getElementById("status");
+  if (s) { s.classList.remove("hidden"); s.textContent = `Script error: ${e.message}`; }
+});
+window.addEventListener("unhandledrejection", e => {
+  const s = document.getElementById("status");
+  if (s) { s.classList.remove("hidden"); s.textContent = `Promise error: ${e.reason?.message || e.reason}`; }
+});
+
 // ========== BibTeX parser ==========
 
 function parseBib(text) {
@@ -1459,7 +1471,7 @@ async function runAudit() {
     useCrossref: $("#useCrossref").checked,
     useS2: $("#useS2").checked,
     s2Key: $("#s2key").value.trim() || null,
-    email: $("#email").value.trim() || null,
+    email: ($("#email")?.value || "").trim() || null,
   };
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
@@ -1575,7 +1587,7 @@ function restoreFromState() {
     if ("useCrossref" in s.opts) $("#useCrossref").checked = !!s.opts.useCrossref;
     if ("useS2" in s.opts) $("#useS2").checked = !!s.opts.useS2;
     if (s.opts.s2Key) $("#s2key").value = s.opts.s2Key;
-    if (s.opts.email) $("#email").value = s.opts.email;
+    if (s.opts.email && $("#email")) $("#email").value = s.opts.email;
   }
   if (Array.isArray(s.audited) && s.audited.length) {
     $("#results").innerHTML = s.audited.map(renderEntry).join("");
