@@ -810,3 +810,14 @@ footer {
   .summary .card { padding: 8px 10px; }
   .summary .card .n { font-size: 20px; }
 }
+
+/* API failure details (expandable inside the summary card) */
+.card.api-notes details > summary { cursor: pointer; list-style: revert; }
+.card.api-notes .api-fail-details {
+  margin-top: 8px; padding: 8px; max-height: 280px; overflow: auto;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+  font-size: 12px; text-align: left;
+}
+.card.api-notes .api-fail-group { margin: 6px 0 2px 0; color: var(--warn); }
+.card.api-notes .api-fail-row { margin: 2px 0 2px 12px; line-height: 1.5; }
+.card.api-notes code { background: rgba(255,255,255,0.05); padding: 1px 4px; border-radius: 3px; font-size: 11px; }

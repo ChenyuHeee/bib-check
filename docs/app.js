@@ -1026,10 +1026,15 @@ async function llmHallucinationCheck(entry, apiKey, model = "gpt-4o-mini") {
 
 // Session-wide tally of API failures so we can summarize once instead of
 // spamming a warning under every entry (the user's #3 complaint about S2).
-const _apiFailures = { openalex: 0, crossref: 0, s2: 0 };
-function _recordApiFailure(src, msg) {
+// `details` keeps per-failure { citeKey, msg } so the summary can expand.
+const _apiFailures = {
+  openalex: 0, crossref: 0, s2: 0,
+  details: { openalex: [], crossref: [], s2: [] },
+};
+function _recordApiFailure(src, msg, citeKey) {
   _apiFailures[src] = (_apiFailures[src] || 0) + 1;
-  console.warn(`[bib-check] ${src} failure: ${msg}`);
+  if (_apiFailures.details[src]) _apiFailures.details[src].push({ citeKey: citeKey || "?", msg: String(msg) });
+  console.warn(`[bib-check] ${src} failure on ${citeKey || "?"}: ${msg}`);
 }
 
 async function auditOne(entry, opts) {
@@ -1051,12 +1056,12 @@ async function auditOne(entry, opts) {
 
   if (title && opts.useOpenalex) {
     const r = await openalexLookup(title, hint);
-    if (r && r.__error) _recordApiFailure("openalex", r.__error);
+    if (r && r.__error) _recordApiFailure("openalex", r.__error, entry.citeKey);
     else if (r) { match = r; source = "openalex"; }
   }
   if (title && opts.useCrossref && (match === null || isPreprint(match))) {
     const cr = await crossrefLookup(title, hint);
-    if (cr && cr.__error) _recordApiFailure("crossref", cr.__error);
+    if (cr && cr.__error) _recordApiFailure("crossref", cr.__error, entry.citeKey);
     else if (cr && !isPreprint(cr)) {
       const score = tokenSortRatio(title, cr.title);
       if (score >= 92 || match === null) {
@@ -1070,7 +1075,7 @@ async function auditOne(entry, opts) {
   }
   if (title && opts.useS2 && (match === null || isPreprint(match))) {
     const s2 = await s2Lookup(title, hint, opts.s2Key);
-    if (s2 && s2.__error) _recordApiFailure("s2", s2.__error);
+    if (s2 && s2.__error) _recordApiFailure("s2", s2.__error, entry.citeKey);
     else if (s2) {
       const score = tokenSortRatio(title, s2.title);
       // Accept S2 if no match yet, or if it's a non-preprint upgrade.
@@ -1364,9 +1369,31 @@ function renderSummary(audited) {
   const apiNotes = [];
   if (_apiFailures.openalex) apiNotes.push(`OpenAlex failed ${_apiFailures.openalex}×`);
   if (_apiFailures.crossref) apiNotes.push(`Crossref failed ${_apiFailures.crossref}×`);
-  if (_apiFailures.s2) apiNotes.push(`Semantic Scholar failed ${_apiFailures.s2}× (silenced; check console)`);
+  if (_apiFailures.s2) apiNotes.push(`Semantic Scholar failed ${_apiFailures.s2}×`);
   if (apiNotes.length) {
-    html += `<div class="card api-notes"><div class="l">API issues: ${apiNotes.join(" · ")}</div></div>`;
+    // Build an expandable details list grouped by source, showing which
+    // cite keys triggered which error message.
+    const detailRows = [];
+    for (const src of ["openalex", "crossref", "s2"]) {
+      const list = _apiFailures.details[src] || [];
+      if (!list.length) continue;
+      detailRows.push(`<div class="api-fail-group"><strong>${src}</strong> (${list.length}):</div>`);
+      // Group by error message so 5 identical "Load failed" collapse into one row.
+      const byMsg = new Map();
+      for (const { citeKey, msg } of list) {
+        if (!byMsg.has(msg)) byMsg.set(msg, []);
+        byMsg.get(msg).push(citeKey);
+      }
+      for (const [msg, keys] of byMsg) {
+        detailRows.push(`<div class="api-fail-row"><code>${escapeHtml(msg)}</code> &mdash; ${keys.map(k => `<code>${escapeHtml(k)}</code>`).join(", ")}</div>`);
+      }
+    }
+    html += `<div class="card api-notes">
+      <details>
+        <summary><div class="l">API issues: ${apiNotes.join(" · ")} <span style="color:var(--muted);font-weight:normal">(click for details)</span></div></summary>
+        <div class="api-fail-details">${detailRows.join("")}</div>
+      </details>
+    </div>`;
   }
   $("#summary").innerHTML = html;
 }
@@ -1415,6 +1442,7 @@ async function runAudit() {
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
   _apiFailures.openalex = 0; _apiFailures.crossref = 0; _apiFailures.s2 = 0;
+  _apiFailures.details.openalex = []; _apiFailures.details.crossref = []; _apiFailures.details.s2 = [];
 
   // Cross-entry duplicate detection
   const dupGroups = new Map();
