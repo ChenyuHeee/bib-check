@@ -355,9 +355,15 @@ function detectIssues(entry) {
   }
   if (f.pages) {
     const p = f.pages.trim();
-    if (!/^\d+(--?\d+)?$/.test(p)) {
+    // Article-style page IDs (e.g. PACMHCI "3:1--3:9") are legitimate.
+    const isArticleStyle = /^\d+:\d+--?\d+:\d+$/.test(p);
+    const isSinglePage = /^[A-Za-z]?\d+$/.test(p);
+    const isRange = /^\d+--?\d+$/.test(p);
+    const isEnDashRange = /^\d+–\d+$/.test(p);  // U+2013 EN DASH (auto-fixed in rewrite)
+    if (!isArticleStyle && !isSinglePage && !isRange && !isEnDashRange) {
       issues.push({ severity: "warning", field: "pages", message: `unusual page format: '${p}' (expected n--m)` });
-    } else {
+    }
+    if (isRange) {
       const m = /^(\d+)--?(\d+)$/.exec(p);
       if (m && parseInt(m[1], 10) > parseInt(m[2], 10)) {
         issues.push({ severity: "error", field: "pages", message: `reversed page range: ${p}` });
@@ -367,23 +373,42 @@ function detectIssues(entry) {
   if (f.doi && !DOI_RE.test(f.doi.trim())) {
     issues.push({ severity: "warning", field: "doi", message: `DOI looks malformed: '${f.doi}'` });
   }
+  // Venue requirements depend on entry type. BibTeX @book/@phdthesis/etc.
+  // require publisher (or institution/school) but NOT booktitle/journal.
+  // Reporting "missing booktitle/journal" for an @book is a false positive.
   const venue = (f.booktitle || f.journal || "").trim();
-  if (!venue) issues.push({ severity: "error", field: "venue", message: "missing booktitle/journal" });
-  else if (looksLikeArxiv(venue)) {
+  const t = entry.entryType;
+  const NEEDS_BOOKTITLE = new Set(["inproceedings", "incollection", "conference"]);
+  const NEEDS_JOURNAL = new Set(["article"]);
+  const NEEDS_PUBLISHER = new Set(["book", "booklet", "manual"]);
+  const NEEDS_INSTITUTION = new Set(["phdthesis", "mastersthesis", "techreport"]);
+  const VENUE_OPTIONAL = new Set(["misc", "online", "dataset", "software", "unpublished", "proceedings"]);
+  if (NEEDS_BOOKTITLE.has(t) && !f.booktitle) {
+    issues.push({ severity: "error", field: "booktitle", message: `@${t} missing booktitle` });
+  } else if (NEEDS_JOURNAL.has(t) && !f.journal) {
+    issues.push({ severity: "error", field: "journal", message: "@article missing journal" });
+  } else if (NEEDS_PUBLISHER.has(t) && !f.publisher) {
+    issues.push({ severity: "warning", field: "publisher", message: `@${t} missing publisher` });
+  } else if (NEEDS_INSTITUTION.has(t) && !f.institution && !f.school) {
+    issues.push({ severity: "warning", field: "institution", message: `@${t} missing institution/school` });
+  }
+  // Preprint / abbreviation warnings only apply when there IS a venue field.
+  if (venue && looksLikeArxiv(venue)) {
     // Refined: only flag as preprint if it really lacks publication-specific
     // metadata. An @inproceedings entry whose journal/booktitle includes
     // arXiv but also has booktitle/pages/etc. is just a citation style choice.
     const isBareArticle = entry.entryType === "article"
       && !f.booktitle && !f.volume && !f.pages && !f.publisher;
     if (isBareArticle) {
-      issues.push({ severity: "warning", field: "journal", message: `venue looks like a preprint server ('${venue}'); search for the published version` });
+      const url = scholarSearchURL(entry);
+      issues.push({ severity: "warning", field: "journal", message: `venue looks like a preprint server ('${venue}'); search for published version: ${url}` });
     }
-  } else if (entry.entryType === "inproceedings" && looksAbbreviated(venue)) {
+  } else if (venue && entry.entryType === "inproceedings" && looksAbbreviated(venue)) {
     if (expandVenueAcronym(venue) === venue) {
       issues.push({ severity: "warning", field: "booktitle", message: `booktitle may be abbreviated ('${venue}'); use full conference name` });
     }
   }
-  if (entry.entryType === "article" && !looksLikeArxiv(venue)) {
+  if (entry.entryType === "article" && venue && !looksLikeArxiv(venue)) {
     for (const k of ["volume", "number", "pages"]) {
       if (!f[k]) issues.push({ severity: "warning", field: k, message: `missing ${k}` });
     }
@@ -520,6 +545,11 @@ function rewrite(entry, scholar) {
   if (src.booktitle) src.booktitle = expandVenueAcronym(src.booktitle);
   if (src.journal) src.journal = expandVenueAcronym(src.journal);
   if (src.author) src.author = normalizeAuthors(src.author);
+  // Pages: autofix en-dash (–) -> double-hyphen (--) per BibTeX convention.
+  if (src.pages && src.pages.includes("\u2013")) {
+    src.pages = src.pages.replace(/\u2013/g, "--");
+    additions.push("pages (en-dash → --)");
+  }
   const journal = src.journal || "";
   if (journal && looksLikeArxiv(journal)) {
     if (src.volume && ARXIV_VOLUME_RE.test(src.volume)) delete src.volume;
@@ -966,6 +996,38 @@ async function auditOne(entry, opts) {
   }
   // (API failures are tracked silently in _apiFailures and surfaced in renderSummary.)
 
+  // === Sanity gates: reject implausible matches before they poison rewrite. ===
+  // Year sanity (#1): jevons1865 must not match a 2023 Routledge re-print.
+  // Allow ±5 years to absorb early-access vs camera-ready drift.
+  if (match) {
+    const bibYear = parseInt((entry.fields.year || "").trim(), 10);
+    const matchYear = parseInt(match.year ?? "", 10);
+    if (bibYear && matchYear && Math.abs(bibYear - matchYear) > 5) {
+      issues.push({ severity: "warning", field: null, message: `match rejected: bib year ${bibYear} but ${source} returned ${matchYear} (Δ${Math.abs(bibYear - matchYear)} years)` });
+      match = null; source = "none"; upgradedFrom = null;
+    }
+  }
+  // Venue-acronym sanity (#4): if the bib venue contains a well-known venue
+  // acronym (OSDI, NAACL, ...), reject any match whose normalized venue is a
+  // *different* well-known venue. Catches OSDI being matched to ACL.
+  if (match && match.venue) {
+    const bibVenueRaw = `${entry.fields.booktitle || ""} ${entry.fields.journal || ""}`.toLowerCase();
+    const matchVenueLower = String(match.venue).toLowerCase();
+    let bibAcronym = null, matchAcronym = null;
+    for (const k of Object.keys(VENUE_FULL_NAME)) {
+      const re = new RegExp(`\\b${k}\\b`);
+      if (!bibAcronym && re.test(bibVenueRaw)) bibAcronym = k;
+      // Match a known acronym in match.venue either by short token or by
+      // checking whether match.venue equals/contains the canonical full name.
+      const fullLower = VENUE_FULL_NAME[k].toLowerCase();
+      if (!matchAcronym && (re.test(matchVenueLower) || matchVenueLower.includes(fullLower))) matchAcronym = k;
+    }
+    if (bibAcronym && matchAcronym && bibAcronym !== matchAcronym) {
+      issues.push({ severity: "warning", field: null, message: `match rejected: bib venue is ${bibAcronym.toUpperCase()} but ${source} matched ${matchAcronym.toUpperCase()} ('${match.venue}')` });
+      match = null; source = "none"; upgradedFrom = null;
+    }
+  }
+
   // Author-diff vs match (count / membership / order). Differences are
   // classified by similarity so cosmetic deviations don't raise false alarms.
   if (match && match.authors?.length) {
@@ -982,8 +1044,12 @@ async function auditOne(entry, opts) {
         return dist <= Math.max(1, Math.floor(Math.min(a.length, b.length) * 0.15));
       };
       const bibSet = new Set(bibLast), matchSet = new Set(matchLast);
+      // Filter "others"/"al"/"others" tokens from extras: these come from
+      // "and others" in the bib and are already reported as a separate error
+      // by detectIssues — no need to also list them as "missing from crossref".
+      const NOISE_LASTNAMES = new Set(["others", "al", "etal"]);
       const missing = matchLast.filter(x => !bibSet.has(x) && !bibLast.some(y => fuzzyEq(x, y)));
-      const extra = bibLast.filter(x => !matchSet.has(x) && !matchLast.some(y => fuzzyEq(x, y)));
+      const extra = bibLast.filter(x => !matchSet.has(x) && !matchLast.some(y => fuzzyEq(x, y)) && !NOISE_LASTNAMES.has(x));
       if (bibLast.length !== matchLast.length) {
         const sev = Math.abs(bibLast.length - matchLast.length) >= 2 ? "warning" : "info";
         issues.push({ severity: sev, field: "author", message: `author count differs: bib=${bibLast.length}, ${source}=${matchLast.length}` });
@@ -1054,6 +1120,13 @@ const $ = sel => document.querySelector(sel);
 
 function escapeHtml(s) {
   return (s ?? "").toString().replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+// Escape, then turn http(s) URLs into clickable links. Used for issue
+// messages that embed e.g. a Google Scholar search URL.
+function linkifyMessage(s) {
+  const esc = escapeHtml(s);
+  return esc.replace(/https?:\/\/[^\s<>"']+/g, url => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
 }
 
 function diffLines(oldText, newText) {
@@ -1142,7 +1215,7 @@ function renderEntry(a) {
   const issuesHtml = visible.length ? `
     <div class="section">
       <h4>Issues</h4>
-      <ul class="issues">${visible.map(i => `<li class="sev-${i.severity}"><span class="badge ${i.severity === "error" ? "err" : i.severity === "warning" ? "warn" : "info"}">${i.severity}</span>${i.field ? `<code>${escapeHtml(i.field)}</code>` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
+      <ul class="issues">${visible.map(i => `<li class="sev-${i.severity}"><span class="badge ${i.severity === "error" ? "err" : i.severity === "warning" ? "warn" : "info"}">${i.severity}</span>${i.field ? `<code>${escapeHtml(i.field)}</code>` : ""}${linkifyMessage(i.message)}</li>`).join("")}</ul>
     </div>` : "";
 
   const matchSection = a.match ? matchHtml : `
