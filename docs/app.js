@@ -1584,24 +1584,17 @@ async function runAudit() {
 
 const LS_KEY = "bibcheck.state.v1";
 
-function saveState(bibText, opts, audited) {
+function saveState(bibText, opts, _audited) {
+  // Audit results are intentionally NOT persisted: a 200+ entry library
+  // produces megabytes of nested objects that, on page reload, take many
+  // seconds to JSON.parse + re-render, freezing the tab. We only persist
+  // input + settings; results are recomputed on demand.
   try {
     const payload = {
       savedAt: new Date().toISOString(),
       bib: bibText,
       range: $("#range").value,
       opts,
-      audited: audited.map(a => ({
-        entry: a.entry,
-        issues: a.issues,
-        match: a.match,
-        source: a.source,
-        rewritten: a.rewritten,
-        upgradedFrom: a.upgradedFrom,
-        additions: a.additions || [],
-        blocked: a.blocked || [],
-        trusted: !!a.trusted,
-      })),
     };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
   } catch (e) {
@@ -1636,33 +1629,10 @@ function restoreFromState() {
     if (s.opts.s2Key) $("#s2key").value = s.opts.s2Key;
     if (s.opts.email && $("#email")) $("#email").value = s.opts.email;
   }
-  if (Array.isArray(s.audited) && s.audited.length) {
-    // IMPORTANT: do NOT auto-render — for large libraries (hundreds of
-    // entries) immediately injecting megabytes of HTML on every page load
-    // freezes the browser for many seconds and makes a subsequent Audit
-    // click feel like it's hung. Show a one-click restore button instead.
-    const when = s.savedAt ? new Date(s.savedAt).toLocaleString() : "previous run";
-    setStatus(
-      `Found ${s.audited.length} cached entries from ${when}. ` +
-      `<button id="restoreCached" style="margin-left:8px">Restore</button> ` +
-      `<button id="discardCached" style="margin-left:4px">Discard</button> ` +
-      `or just click Audit to re-run.`,
-      100
-    );
-    setTimeout(() => {
-      const restore = document.getElementById("restoreCached");
-      const discard = document.getElementById("discardCached");
-      if (restore) restore.addEventListener("click", () => {
-        $("#results").innerHTML = s.audited.map(renderEntry).join("");
-        renderSummary(s.audited);
-        setupExports(s.audited);
-        setStatus(`Restored ${s.audited.length} entries from ${when}.`, 100);
-      });
-      if (discard) discard.addEventListener("click", () => {
-        clearState();
-        setStatus("Cached results discarded. Bib text and settings kept.", 100);
-      });
-    }, 0);
+  // Migrate: old payloads may still hold a huge `audited` array. Drop it
+  // so it stops bloating localStorage on subsequent saves.
+  if (s.audited) {
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ savedAt: s.savedAt, bib: s.bib, range: s.range, opts: s.opts })); } catch {}
   }
 }
 
