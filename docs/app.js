@@ -733,6 +733,67 @@ async function runAudit() {
   }
   setStatus(`Done. Audited ${audited.length} entries.`, 100);
   renderSummary(audited);
+  setupExports(audited);
+}
+
+function download(name, text, mime = "text/plain") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function buildBib(audited) {
+  return audited.map(a => a.rewritten).join("\n\n") + "\n";
+}
+
+function buildJson(audited) {
+  return JSON.stringify(audited.map(a => ({
+    index: a.entry.index,
+    citeKey: a.entry.citeKey,
+    line: a.entry.lineNumber,
+    source: a.source,
+    issues: a.issues,
+    match: a.match,
+    original: a.entry.raw.trim(),
+    suggested: a.rewritten,
+  })), null, 2);
+}
+
+function buildMarkdown(audited) {
+  const lines = ["# bib-check report", ""];
+  for (const a of audited) {
+    const e = a.entry;
+    lines.push(`## [${e.index}] \`${e.citeKey}\` (line ${e.lineNumber}) — source: ${a.source}`, "");
+    const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning");
+    if (visible.length) {
+      lines.push("**Issues**");
+      for (const i of visible) {
+        const tag = i.severity === "error" ? "❌" : "⚠️";
+        lines.push(`- ${tag} ${i.field ? `\`${i.field}\`: ` : ""}${i.message}`);
+      }
+      lines.push("");
+    }
+    if (a.match) {
+      lines.push("**Match**", `- title: ${a.match.title}`, `- authors: ${a.match.authors?.join(", ") || "(none)"}`, `- year: ${a.match.year ?? "?"}`, `- venue: ${a.match.venue || "?"} (${a.match.venueKind || "?"})`, `- vol/num/pages: ${a.match.volume || "-"} / ${a.match.number || "-"} / ${a.match.pages || "-"}`, "");
+    }
+    lines.push("**Original**", "```bibtex", e.raw.trim(), "```", "", "**Suggested**", "```bibtex", a.rewritten, "```", "");
+  }
+  return lines.join("\n");
+}
+
+function setupExports(audited) {
+  $("#exports").classList.remove("hidden");
+  $("#dlBib").onclick = () => download("suggested.bib", buildBib(audited), "application/x-bibtex");
+  $("#dlReport").onclick = () => download("report.json", buildJson(audited), "application/json");
+  $("#dlMd").onclick = () => download("report.md", buildMarkdown(audited), "text/markdown");
+  $("#copyAll").onclick = async () => {
+    await navigator.clipboard.writeText(buildBib(audited));
+    const b = $("#copyAll"); const old = b.textContent;
+    b.textContent = "Copied"; setTimeout(() => b.textContent = old, 1200);
+  };
 }
 
 document.addEventListener("click", e => {

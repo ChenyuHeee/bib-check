@@ -89,6 +89,9 @@ button.primary:hover { filter: brightness(1.1); }
   gap: 10px;
   margin: 16px 0;
 }
+
+.exports { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.exports button { background: var(--panel-2); }
 .summary .card {
   background: var(--panel);
   border: 1px solid var(--border);
