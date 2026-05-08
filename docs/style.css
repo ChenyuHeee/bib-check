@@ -714,10 +714,12 @@ pre.bib .del { background: rgba(248,113,113,0.18); text-decoration: line-through
   justify-content: center;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  visibility: hidden;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
 }
 .drop-overlay.active {
   opacity: 1;
+  visibility: visible;
 }
 .drop-overlay .drop-text {
   background: var(--panel);
