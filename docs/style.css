@@ -388,7 +388,6 @@ button.icon-only:hover { color: var(--bad); background: var(--bad-dim); border: 
   transition: background var(--transition);
 }
 .entry .head:hover { background: var(--panel-2); }
-.entry.open .head { border-bottom: 1px solid var(--border-light); }
 
 .entry .head .title {
   display: flex;
@@ -462,15 +461,15 @@ button.icon-only:hover { color: var(--bad); background: var(--bad-dim); border: 
 /* ---- Entry body ---- */
 
 .entry .body {
-  display: grid;
-  grid-template-rows: 0fr;
-  transition: grid-template-rows 0.25s ease;
-}
-.entry .body > div {
+  max-height: 0;
   overflow: hidden;
+  transition: max-height 0.3s ease;
 }
 .entry.open .body {
-  grid-template-rows: 1fr;
+  max-height: 4000px;
+}
+.entry.open .head {
+  border-bottom: 1px solid var(--border-light);
 }
 
 .body-inner { padding: 4px 14px 14px; }
