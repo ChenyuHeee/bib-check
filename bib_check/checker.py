@@ -83,12 +83,20 @@ def render_report(audited: list[AuditedEntry]) -> str:
             lines.append("**Google Scholar match**")
             lines.append(
                 f"- title: {s.title}\n"
-                f"- authors: {', '.join(s.authors) if s.authors else '(none)'}\n"
+                f"- authors ({len(s.authors)}): "
+                f"{', '.join(s.authors) if s.authors else '(none)'}\n"
                 f"- year: {s.year or '?'}\n"
                 f"- venue: {s.venue or '?'} ({s.venue_kind or '?'})\n"
-                f"- volume/number/pages: {s.volume or '-'} / {s.number or '-'} / {s.pages or '-'}\n"
-                f"- raw meta: `{s.raw_meta}`"
+                f"- volume/number/pages: "
+                f"{s.volume or '-'} / {s.number or '-'} / {s.pages or '-'}\n"
+                f"- gray meta: `{s.raw_meta}`"
             )
+            if s.raw_bibtex:
+                lines.append("")
+                lines.append("_Raw BibTeX as exported by Scholar:_")
+                lines.append("```bibtex")
+                lines.append(s.raw_bibtex)
+                lines.append("```")
         else:
             lines.append("_No Scholar match used (none found or skipped)._")
 
