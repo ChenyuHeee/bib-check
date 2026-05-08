@@ -310,19 +310,6 @@ button.icon-only:hover { color: var(--bad); background: var(--bad-dim); border: 
   z-index: 10;
   background: var(--bg);
   padding: 10px 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  opacity: 0;
-  transform: translateY(-8px);
-  pointer-events: none;
-  transition: opacity var(--transition), transform var(--transition);
-}
-.sticky-bar.stuck {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
 }
 
 /* ---- Filter bar ---- */

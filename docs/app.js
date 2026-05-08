@@ -1586,22 +1586,12 @@ function showToast(message, duration = 2000) {
   }, duration);
 }
 
-// ========== Sticky bar ==========
+// ========== Init ==========
 
-function setupStickyBar() {
-  const bar = $("#stickyBar");
-  const sentinel = document.createElement("div");
-  sentinel.style.position = "absolute";
-  sentinel.style.height = "1px";
-  const input = document.querySelector(".input");
-  input.insertAdjacentElement("afterend", sentinel);
-  const obs = new IntersectionObserver(([e]) => {
-    bar.classList.toggle("stuck", !e.isIntersecting);
-  }, { threshold: 0 });
-  obs.observe(sentinel);
-}
-
-// ========== Drag-and-drop ==========
+setupDragDrop();
+setupKeyboard();
+setupExpandCollapse();
+restoreFromState();
 
 function setupDragDrop() {
   const overlay = $("#dropOverlay");
@@ -1743,10 +1733,4 @@ for (const id of ["hideClean", "hideTrusted", "collapseInfo"]) {
   if (el) el.addEventListener("change", applyFilters);
 }
 
-// ========== Init ==========
-
-setupStickyBar();
-setupDragDrop();
-setupKeyboard();
-setupExpandCollapse();
-restoreFromState();
+// (init moved above after function definitions)
