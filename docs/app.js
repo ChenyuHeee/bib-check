@@ -79,10 +79,12 @@ function normalizeWhitespace(v) {
 
 // ========== Normalizer ==========
 
-const FORBIDDEN_FIELDS = new Set([
-  "doi", "url", "eprint", "eprinttype", "archiveprefix", "biburl", "bibsource",
-  "timestamp", "issn", "isbn", "abstract", "keywords", "month", "note",
-]);
+// Fields that the rewriter will silently strip. Kept empty by default: the
+// user explicitly added every field, so destroying doi/url/abstract/keywords
+// just because we have a "better" canonical version is too aggressive and
+// pollutes the diff with deletions the user didn't ask for. Add fields here
+// only if they are *guaranteed* noise.
+const FORBIDDEN_FIELDS = new Set();
 
 const ARXIV_VENUE_HINTS = ["corr", "arxiv", "preprint", "techrxiv", "authorea", "ssrn"];
 
@@ -541,11 +543,9 @@ function rewrite(entry, scholar) {
   }
 
   for (const k of FORBIDDEN_FIELDS) delete src[k];
-  // Cosmetic normalization (always safe): expand standalone acronyms, format authors.
-  if (src.booktitle) src.booktitle = expandVenueAcronym(src.booktitle);
-  if (src.journal) src.journal = expandVenueAcronym(src.journal);
-  if (src.author) src.author = normalizeAuthors(src.author);
   // Pages: autofix en-dash (–) -> double-hyphen (--) per BibTeX convention.
+  // (This is the only auto-cosmetic we apply; everything else respects user
+  // formatting so the diff stays signal-only.)
   if (src.pages && src.pages.includes("\u2013")) {
     src.pages = src.pages.replace(/\u2013/g, "--");
     additions.push("pages (en-dash → --)");
@@ -565,14 +565,40 @@ function rewrite(entry, scholar) {
     else if (scholarEntryType && ["article", "inproceedings", "book", "incollection", "techreport"].includes(scholarEntryType)) entryType = scholarEntryType;
   }
 
-  const order = entryType === "article"
-    ? ["author", "title", "journal", "volume", "number", "pages", "year", "publisher"]
-    : ["author", "title", "booktitle", "pages", "year", "address", "publisher", "organization"];
+  // ZERO-NOISE PATH: if we didn't actually add anything and the entry type
+  // hasn't changed, return the user's original text verbatim. This avoids
+  // diff noise from field reordering / quote-style changes / acronym
+  // expansion on entries that were already complete.
+  const typeChanged = entryType !== entry.entryType;
+  if (!additions.length && !typeChanged) {
+    return { text: entry.raw.trim(), additions: [], blocked };
+  }
+
+  // PRESERVE-ORDER PATH: emit fields in the order they appeared in the
+  // source. Newly filled fields (tracked in `addedFieldNames`) are appended
+  // at the end so they're easy to spot in the diff.
+  const addedFieldNames = new Set();
+  for (const a of additions) {
+    // Strip parenthetical notes like "booktitle (upgraded from arxiv)".
+    const name = a.replace(/\s*\(.*\)\s*$/, "").trim();
+    addedFieldNames.add(name);
+  }
+  // Only normalize fields we actually touched; leave untouched fields alone.
+  for (const name of addedFieldNames) {
+    if (name === "booktitle" && src.booktitle) src.booktitle = expandVenueAcronym(src.booktitle);
+    if (name === "journal" && src.journal) src.journal = expandVenueAcronym(src.journal);
+    if (name === "author" && src.author) src.author = normalizeAuthors(src.author);
+  }
+
   const lines = [`@${entryType}{${entry.citeKey},`];
   const seen = new Set();
-  for (const k of order) {
-    if (src[k]) { lines.push(`  ${k.padEnd(10)}= {${src[k]}},`); seen.add(k); }
+  // 1. Emit fields in the user's original order (skip any we deleted above).
+  for (const k of Object.keys(entry.fields)) {
+    if (FORBIDDEN_FIELDS.has(k) || !src[k]) continue;
+    lines.push(`  ${k.padEnd(10)}= {${src[k]}},`);
+    seen.add(k);
   }
+  // 2. Append newly filled fields not in the original.
   for (const [k, v] of Object.entries(src)) {
     if (seen.has(k) || FORBIDDEN_FIELDS.has(k) || !v) continue;
     lines.push(`  ${k.padEnd(10)}= {${v}},`);
