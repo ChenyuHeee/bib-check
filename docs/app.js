@@ -1637,32 +1637,11 @@ function restoreFromState() {
     if (s.opts.email && $("#email")) $("#email").value = s.opts.email;
   }
   if (Array.isArray(s.audited) && s.audited.length) {
-    // IMPORTANT: do NOT auto-render — for large libraries (hundreds of
-    // entries) immediately injecting megabytes of HTML on every page load
-    // freezes the browser for many seconds and makes a subsequent Audit
-    // click feel like it's hung. Show a one-click restore button instead.
+    $("#results").innerHTML = s.audited.map(renderEntry).join("");
+    renderSummary(s.audited);
+    setupExports(s.audited);
     const when = s.savedAt ? new Date(s.savedAt).toLocaleString() : "previous run";
-    setStatus(
-      `Found ${s.audited.length} cached entries from ${when}. ` +
-      `<button id="restoreCached" style="margin-left:8px">Restore</button> ` +
-      `<button id="discardCached" style="margin-left:4px">Discard</button> ` +
-      `or just click Audit to re-run.`,
-      100
-    );
-    setTimeout(() => {
-      const restore = document.getElementById("restoreCached");
-      const discard = document.getElementById("discardCached");
-      if (restore) restore.addEventListener("click", () => {
-        $("#results").innerHTML = s.audited.map(renderEntry).join("");
-        renderSummary(s.audited);
-        setupExports(s.audited);
-        setStatus(`Restored ${s.audited.length} entries from ${when}.`, 100);
-      });
-      if (discard) discard.addEventListener("click", () => {
-        clearState();
-        setStatus("Cached results discarded. Bib text and settings kept.", 100);
-      });
-    }, 0);
+    setStatus(`Restored ${s.audited.length} entries from ${when}. Click "Run audit" to refresh.`, 100);
   }
 }
 
