@@ -605,8 +605,10 @@ function rewrite(entry, scholar) {
     const valueChanged = src[k] !== entry.fields[k];
     if (!valueChanged && rawFieldLines[k]) {
       // Reuse the original raw text byte-for-byte (preserves whatever indent
-      // the user had). Only ensure a trailing comma so we can append fields.
-      let raw = rawFieldLines[k].replace(/\s*$/, "");
+      // the user had). Strip leading newlines (the extractor captures the
+      // whitespace between fields, including the line break — but lines.join
+      // adds its own newline, so leaving it in produces blank gaps).
+      let raw = rawFieldLines[k].replace(/^\n+/, "").replace(/\s*$/, "");
       if (!raw.endsWith(",")) raw += ",";
       lines.push(raw);
     } else {
