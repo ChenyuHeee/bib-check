@@ -764,9 +764,28 @@ const PREPRINT_VENUE_HINTS = ["arxiv", "biorxiv", "ssrn", "techrxiv", "authorea"
 
 function isPreprint(r) { const v = (r?.venue || "").toLowerCase(); return PREPRINT_VENUE_HINTS.some(h => v.includes(h)); }
 
-async function oaSearch(title) {
-  const url = `${OA_BASE}?search=${encodeURIComponent(title)}&per-page=10`;
-  const resp = await fetch(url, { headers: { "Accept": "application/json" } });
+// Fetch with automatic retry on HTTP 429 (rate limit). Honors Retry-After when
+// the server provides it; otherwise uses exponential backoff. Returns the
+// final Response (caller checks .ok).
+async function fetchWithRetry(url, options = {}, maxRetries = 3) {
+  let delayMs = 1000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(url, options);
+    if (resp.status !== 429 || attempt === maxRetries) return resp;
+    const retryAfter = parseFloat(resp.headers.get("Retry-After") || "");
+    const wait = Number.isFinite(retryAfter) ? retryAfter * 1000 : delayMs;
+    await new Promise(r => setTimeout(r, wait));
+    delayMs *= 2;
+  }
+}
+
+async function oaSearch(title, email) {
+  // OpenAlex "polite pool" — adding mailto= moves us off the shared anonymous
+  // bucket and gives ~10 req/s instead of frequent 429s.
+  const params = new URLSearchParams({ search: title, "per-page": "10" });
+  if (email) params.set("mailto", email);
+  const url = `${OA_BASE}?${params.toString()}`;
+  const resp = await fetchWithRetry(url, { headers: { "Accept": "application/json" } });
   if (!resp.ok) throw new Error(`OpenAlex HTTP ${resp.status}`);
   const data = await resp.json();
   return data.results || [];
@@ -830,15 +849,15 @@ function pickBest(targetTitle, hits, hint, threshold) {
   return best;
 }
 
-async function openalexLookup(title, hint) {
+async function openalexLookup(title, hint, email) {
   try {
-    const hits = await oaSearch(title);
+    const hits = await oaSearch(title, email);
     let r = pickBest(title, hits, hint, 75);
     if (!r) {
       // simplify: drop subtitle
       const colon = title.indexOf(":");
       if (colon > 10) {
-        const hits2 = await oaSearch(title.slice(0, colon));
+        const hits2 = await oaSearch(title.slice(0, colon), email);
         r = pickBest(title.slice(0, colon), hits2, hint, 75);
       }
     }
@@ -1057,7 +1076,7 @@ async function auditOne(entry, opts) {
   }
 
   if (title && opts.useOpenalex) {
-    const r = await openalexLookup(title, hint);
+    const r = await openalexLookup(title, hint, opts.email);
     if (r && r.__error) _recordApiFailure("openalex", r.__error, entry.citeKey);
     else if (r) { match = r; source = "openalex"; }
   }
@@ -1440,6 +1459,7 @@ async function runAudit() {
     useCrossref: $("#useCrossref").checked,
     useS2: $("#useS2").checked,
     s2Key: $("#s2key").value.trim() || null,
+    email: $("#email").value.trim() || null,
   };
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
@@ -1555,6 +1575,7 @@ function restoreFromState() {
     if ("useCrossref" in s.opts) $("#useCrossref").checked = !!s.opts.useCrossref;
     if ("useS2" in s.opts) $("#useS2").checked = !!s.opts.useS2;
     if (s.opts.s2Key) $("#s2key").value = s.opts.s2Key;
+    if (s.opts.email) $("#email").value = s.opts.email;
   }
   if (Array.isArray(s.audited) && s.audited.length) {
     $("#results").innerHTML = s.audited.map(renderEntry).join("");
