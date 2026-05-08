@@ -1097,7 +1097,7 @@ async function auditOne(entry, opts) {
     const bibYear = parseInt((entry.fields.year || "").trim(), 10);
     const matchYear = parseInt(match.year ?? "", 10);
     if (bibYear && matchYear && Math.abs(bibYear - matchYear) > 5) {
-      issues.push({ severity: "warning", field: null, message: `match rejected: bib year ${bibYear} but ${source} returned ${matchYear} (Δ${Math.abs(bibYear - matchYear)} years)` });
+      issues.push({ severity: "info", field: null, message: `${source} candidate rejected (year mismatch: bib=${bibYear}, ${source}=${matchYear}, Δ${Math.abs(bibYear - matchYear)} years)` });
       match = null; source = "none"; upgradedFrom = null;
     }
   }
@@ -1117,7 +1117,7 @@ async function auditOne(entry, opts) {
       if (!matchAcronym && (re.test(matchVenueLower) || matchVenueLower.includes(fullLower))) matchAcronym = k;
     }
     if (bibAcronym && matchAcronym && bibAcronym !== matchAcronym) {
-      issues.push({ severity: "warning", field: null, message: `match rejected: bib venue is ${bibAcronym.toUpperCase()} but ${source} matched ${matchAcronym.toUpperCase()} ('${match.venue}')` });
+      issues.push({ severity: "info", field: null, message: `${source} candidate rejected (venue mismatch: bib mentions ${bibAcronym.toUpperCase()} but ${source} returned ${matchAcronym.toUpperCase()})` });
       match = null; source = "none"; upgradedFrom = null;
     }
   }
