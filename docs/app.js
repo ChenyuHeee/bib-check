@@ -590,15 +590,30 @@ function rewrite(entry, scholar) {
     if (name === "author" && src.author) src.author = normalizeAuthors(src.author);
   }
 
+  // Extract the original verbatim line (or block) for each existing field
+  // from entry.raw, so untouched fields render byte-identical to the input
+  // and don't appear as diff hunks just because of formatting.
+  const rawFieldLines = extractRawFieldLines(entry.raw);
+
   const lines = [`@${entryType}{${entry.citeKey},`];
   const seen = new Set();
-  // 1. Emit fields in the user's original order (skip any we deleted above).
+  // 1. Emit fields in the user's original order. If the field's value is
+  //    unchanged AND we have its original raw text, reuse that verbatim.
+  //    Otherwise re-emit with the canonical formatting.
   for (const k of Object.keys(entry.fields)) {
     if (FORBIDDEN_FIELDS.has(k) || !src[k]) continue;
-    lines.push(`  ${k.padEnd(10)}= {${src[k]}},`);
+    const valueChanged = src[k] !== entry.fields[k];
+    if (!valueChanged && rawFieldLines[k]) {
+      // Ensure trailing comma (last original field may have lacked one).
+      let raw = rawFieldLines[k].replace(/\s*$/, "");
+      if (!raw.endsWith(",")) raw += ",";
+      lines.push(raw);
+    } else {
+      lines.push(`  ${k.padEnd(10)}= {${src[k]}},`);
+    }
     seen.add(k);
   }
-  // 2. Append newly filled fields not in the original.
+  // 2. Append newly filled fields not in the original (always canonical).
   for (const [k, v] of Object.entries(src)) {
     if (seen.has(k) || FORBIDDEN_FIELDS.has(k) || !v) continue;
     lines.push(`  ${k.padEnd(10)}= {${v}},`);
@@ -606,6 +621,51 @@ function rewrite(entry, scholar) {
   if (lines[lines.length - 1].endsWith(",")) lines[lines.length - 1] = lines[lines.length - 1].slice(0, -1);
   lines.push("}");
   return { text: lines.join("\n"), additions, blocked };
+}
+
+// Parse `entry.raw` into a map { fieldName: originalLineText } so the
+// rewriter can re-emit untouched fields byte-for-byte. Handles values that
+// span multiple lines by greedily matching balanced braces / quotes.
+function extractRawFieldLines(raw) {
+  const out = {};
+  if (!raw) return out;
+  // Strip the @type{key, prefix and trailing }.
+  const inner = raw.replace(/^[\s\S]*?\{[^,]*,\s*/, "").replace(/\}\s*$/, "");
+  // Tokenize: walk char-by-char, tracking brace/quote depth so we know where
+  // each field ends. Splitting on bare commas would break on `{a,b}`.
+  let i = 0;
+  while (i < inner.length) {
+    // Skip leading whitespace / commas.
+    while (i < inner.length && /[\s,]/.test(inner[i])) i++;
+    if (i >= inner.length) break;
+    const fieldStart = i;
+    // Read field name: letters / digits / dashes up to '='.
+    const eqMatch = /^([A-Za-z_][\w-]*)\s*=\s*/.exec(inner.slice(i));
+    if (!eqMatch) { i++; continue; }
+    const name = eqMatch[1].toLowerCase();
+    i += eqMatch[0].length;
+    // Read value: braced, quoted, or bare.
+    if (inner[i] === "{") {
+      let depth = 1; i++;
+      while (i < inner.length && depth > 0) {
+        if (inner[i] === "\\" && i + 1 < inner.length) { i += 2; continue; }
+        if (inner[i] === "{") depth++;
+        else if (inner[i] === "}") depth--;
+        i++;
+      }
+    } else if (inner[i] === '"') {
+      i++;
+      while (i < inner.length && inner[i] !== '"') {
+        if (inner[i] === "\\" && i + 1 < inner.length) { i += 2; continue; }
+        i++;
+      }
+      if (inner[i] === '"') i++;
+    } else {
+      while (i < inner.length && inner[i] !== ",") i++;
+    }
+    out[name] = inner.slice(fieldStart, i);
+  }
+  return out;
 }
 
 // ========== Title-match (token sort ratio) ==========
