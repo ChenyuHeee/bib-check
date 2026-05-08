@@ -580,9 +580,8 @@ button.icon-only:hover { color: var(--bad); background: var(--bad-dim); border: 
   grid-template-columns: 38px 38px 16px 1fr;
   align-items: baseline;
   padding: 1px 8px;
-  white-space: pre-wrap;
-  word-break: break-word;
   line-height: 1.5;
+  min-width: 0;
 }
 .d-row:nth-child(odd) { background: rgba(0,0,0,0.06); }
 @media (prefers-color-scheme: light) {
@@ -597,7 +596,11 @@ button.icon-only:hover { color: var(--bad); background: var(--bad-dim); border: 
   opacity: 0.5;
 }
 .d-row .d-sign { color: var(--muted); text-align: center; user-select: none; font-size: 10px; }
-.d-row .d-line { white-space: pre-wrap; }
+.d-row .d-line {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
 .d-row.d-add { background: rgba(52, 211, 153, 0.12); }
 .d-row.d-add:nth-child(odd) { background: rgba(52, 211, 153, 0.08); }
 .d-row.d-add .d-sign, .d-row.d-add .d-line { color: var(--good); }
