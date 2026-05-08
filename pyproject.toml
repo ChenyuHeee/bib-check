@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bib-check"
 version = "0.1.0"
-description = "Audit BibTeX entries against Google Scholar and rewrite to a unified style."
+description = "Audit BibTeX bibliographies against OpenAlex, Crossref, Semantic Scholar, DBLP & Google Scholar. Rewrite to a unified academic style."
 requires-python = ">=3.10"
 dependencies = [
     "playwright>=1.45",
