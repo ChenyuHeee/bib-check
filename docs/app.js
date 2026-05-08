@@ -778,30 +778,23 @@ function isPreprint(r) { const v = (r?.venue || "").toLowerCase(); return PREPRI
 
 // Fetch with automatic retry on HTTP 429 (rate limit) AND on network-level
 // TypeError ("Failed to fetch") which Semantic Scholar in particular emits
-// when it drops a connection under load. Also enforces a per-attempt timeout
-// because Safari has a known bug where some concurrent cross-origin fetches
-// never resolve (no response, no error) — without this the whole audit stalls.
-// Honors Retry-After when the server provides it; otherwise exponential backoff.
-async function fetchWithRetry(url, options = {}, maxRetries = 3, perAttemptTimeoutMs = 15000) {
+// when it drops a connection under load. Honors Retry-After when the server
+// provides it; otherwise uses exponential backoff. Returns the final
+// Response (caller checks .ok), or rethrows the last network error.
+async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   let delayMs = 1000;
   let lastErr;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), perAttemptTimeoutMs);
     try {
-      const resp = await fetch(url, { ...options, signal: ctrl.signal });
-      clearTimeout(timer);
+      const resp = await fetch(url, options);
       if (resp.status !== 429 || attempt === maxRetries) return resp;
       const retryAfter = parseFloat(resp.headers.get("Retry-After") || "");
       const wait = Number.isFinite(retryAfter) ? retryAfter * 1000 : delayMs;
       await new Promise(r => setTimeout(r, wait));
       delayMs *= 2;
     } catch (e) {
-      clearTimeout(timer);
-      // Normalize abort to a clearer message.
-      if (e.name === "AbortError") lastErr = new Error(`request timed out after ${perAttemptTimeoutMs}ms`);
-      else lastErr = e;
-      if (attempt === maxRetries) throw lastErr;
+      lastErr = e;
+      if (attempt === maxRetries) throw e;
       await new Promise(r => setTimeout(r, delayMs));
       delayMs *= 2;
     }
@@ -1548,23 +1541,14 @@ async function runAudit() {
     updateProgress();
   }
 
-  // Worker-pool: keep CONCURRENCY tasks in flight at all times. This is more
-  // resilient than fixed batches — if one entry's API calls are slow, other
-  // workers keep consuming from the queue instead of all 3 waiting.
-  let nextIdx = 0;
-  async function worker() {
-    while (nextIdx < targets.length) {
-      const e = targets[nextIdx++];
-      try { await processOne(e); }
-      catch (err) {
-        // Defensive: processOne shouldn't throw (auditOne swallows source errors)
-        // but if it does, log and keep the worker alive.
-        console.error("audit worker error", e.citeKey, err);
-        completed++; updateProgress();
-      }
+  // Process in concurrent batches
+  for (let i = 0; i < targets.length; i += CONCURRENCY) {
+    const batch = targets.slice(i, i + CONCURRENCY).map(processOne);
+    await Promise.all(batch);
+    if (i + CONCURRENCY < targets.length) {
+      await new Promise(r => setTimeout(r, INTER_BATCH_MS));
     }
   }
-  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   setStatus(`Done. Audited ${audited.length} entries.`, 100);
   renderSummary(audited);
