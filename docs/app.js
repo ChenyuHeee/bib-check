@@ -178,14 +178,62 @@ function normalizeAuthors(authorField) {
   return authorField.split(/\s+and\s+/).map(p => p.trim()).filter(Boolean).map(normalizeOneName).join(" and ");
 }
 
+const ANON_PATTERNS = [
+  /^anonymous$/i, /^\{?anonymous\}?$/i, /^et\s+al\.?$/i, /^others$/i, /^\{?\s*\}?$/,
+];
+const DOI_RE = /^(https?:\/\/(dx\.)?doi\.org\/)?10\.\d{4,}\/[^\s]+$/i;
+
 function detectIssues(entry) {
   const issues = [];
   const f = entry.fields;
   const author = (f.author || "").trim();
   if (!author) issues.push({ severity: "error", field: "author", message: "missing author" });
-  else if (hasEtal(author)) issues.push({ severity: "error", field: "author", message: "author list contains et al./others" });
+  else {
+    if (hasEtal(author)) issues.push({ severity: "error", field: "author", message: "author list contains et al./others" });
+    if (ANON_PATTERNS.some(re => re.test(author))) {
+      issues.push({ severity: "warning", field: "author", message: `anonymous/placeholder author: '${author}'` });
+    }
+  }
   if (!f.title) issues.push({ severity: "error", field: "title", message: "missing title" });
+  else {
+    const open = (f.title.match(/\{/g) || []).length;
+    const close = (f.title.match(/\}/g) || []).length;
+    if (open !== close) {
+      issues.push({ severity: "error", field: "title", message: `unbalanced braces in title (${open} '{' vs ${close} '}')` });
+    }
+    const letters = f.title.replace(/[^a-zA-Z]/g, "");
+    if (letters.length > 10) {
+      const upperRatio = (letters.match(/[A-Z]/g) || []).length / letters.length;
+      if (upperRatio > 0.5 && !f.title.includes("{")) {
+        issues.push({ severity: "warning", field: "title", message: `title has ${(upperRatio * 100).toFixed(0)}% capitals; protect with {Braces}` });
+      }
+    }
+  }
   if (!f.year) issues.push({ severity: "error", field: "year", message: "missing year" });
+  else {
+    if (!/^\d{4}$/.test(f.year.trim())) {
+      issues.push({ severity: "error", field: "year", message: `invalid year format: '${f.year}'` });
+    } else {
+      const y = parseInt(f.year, 10);
+      if (y > new Date().getFullYear() + 1) {
+        issues.push({ severity: "warning", field: "year", message: `year ${y} is in the future` });
+      }
+    }
+  }
+  if (f.pages) {
+    const p = f.pages.trim();
+    if (!/^\d+(--?\d+)?$/.test(p)) {
+      issues.push({ severity: "warning", field: "pages", message: `unusual page format: '${p}' (expected n--m)` });
+    } else {
+      const m = /^(\d+)--?(\d+)$/.exec(p);
+      if (m && parseInt(m[1], 10) > parseInt(m[2], 10)) {
+        issues.push({ severity: "error", field: "pages", message: `reversed page range: ${p}` });
+      }
+    }
+  }
+  if (f.doi && !DOI_RE.test(f.doi.trim())) {
+    issues.push({ severity: "warning", field: "doi", message: `DOI looks malformed: '${f.doi}'` });
+  }
   const venue = (f.booktitle || f.journal || "").trim();
   if (!venue) issues.push({ severity: "error", field: "venue", message: "missing booktitle/journal" });
   else if (looksLikeArxiv(venue)) {
@@ -552,6 +600,7 @@ async function auditOne(entry, opts) {
   const title = entry.fields.title || "";
   const hint = entry.fields.author || "";
   let match = null, source = "none";
+  let upgradedFrom = null;
   const errors = [];
 
   if (title && opts.useOpenalex) {
@@ -566,6 +615,7 @@ async function auditOne(entry, opts) {
       const score = tokenSortRatio(title, cr.title);
       if (score >= 92 || match === null) {
         if (score >= 88) {
+          if (match && isPreprint(match)) upgradedFrom = match.venue || "preprint";
           if (match && match.authors?.length) cr.authors = match.authors; // keep ordering
           match = cr; source = "crossref";
         }
@@ -581,12 +631,34 @@ async function auditOne(entry, opts) {
       if (match === null && score >= 80) {
         match = s2; source = "s2";
       } else if (match && isPreprint(match) && !isPreprint(s2) && score >= 88) {
+        upgradedFrom = match.venue || "preprint";
         if (match.authors?.length) s2.authors = match.authors;
         match = s2; source = "s2";
       }
     }
   }
   for (const e of errors) issues.push({ severity: "warning", field: null, message: e });
+
+  // Author-diff vs match (count / membership / order).
+  if (match && match.authors?.length) {
+    const bibLast = extractAuthorLastnames(entry.fields.author || "");
+    const matchLast = match.authors.map(authorLastname).filter(Boolean);
+    if (bibLast.length && matchLast.length) {
+      const bibSet = new Set(bibLast), matchSet = new Set(matchLast);
+      const missing = matchLast.filter(x => !bibSet.has(x));
+      const extra = bibLast.filter(x => !matchSet.has(x));
+      if (bibLast.length !== matchLast.length) {
+        issues.push({ severity: "warning", field: "author", message: `author count differs: bib=${bibLast.length}, ${source}=${matchLast.length}` });
+      }
+      if (missing.length) issues.push({ severity: "warning", field: "author", message: `authors in ${source} but missing from bib: ${missing.join(", ")}` });
+      if (extra.length) issues.push({ severity: "warning", field: "author", message: `authors in bib but not in ${source}: ${extra.join(", ")}` });
+      if (!missing.length && !extra.length && bibLast.length === matchLast.length) {
+        const orderDiffers = bibLast.some((x, i) => x !== matchLast[i]);
+        if (orderDiffers) issues.push({ severity: "warning", field: "author", message: `author order differs from ${source}` });
+      }
+    }
+  }
+
   const scholar = match ? {
     author: match.authors?.join(" and ") || "",
     title: match.title,
@@ -600,7 +672,24 @@ async function auditOne(entry, opts) {
     entryType: match.entryType,
   } : null;
   const rewritten = rewrite(entry, scholar);
-  return { entry, issues, match, source, rewritten };
+  return { entry, issues, match, source, rewritten, upgradedFrom };
+}
+
+function extractAuthorLastnames(authorsStr) {
+  return authorsStr.split(/\s+and\s+/i).map(s => s.trim()).filter(Boolean).map(a => {
+    a = a.replace(/[{}]/g, "");
+    let last;
+    if (a.includes(",")) last = a.split(",")[0].trim();
+    else { const t = a.split(/\s+/); last = t[t.length - 1]; }
+    return last.replace(/[^a-zA-Z]/g, "").toLowerCase();
+  }).filter(Boolean);
+}
+
+function scholarSearchURL(entry) {
+  const title = (entry.fields.title || "").replace(/[{}\\]/g, "");
+  const author = (entry.fields.author || "").split(/\s+and\s+/i)[0].replace(/[{}\\]/g, "");
+  const q = `${title} ${author}`.replace(/\s+/g, " ").trim();
+  return "https://scholar.google.com/scholar?q=" + encodeURIComponent(q);
 }
 
 // ========== Renderer ==========
@@ -630,13 +719,15 @@ function renderEntry(a) {
   const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning");
   const badges = [];
   badges.push(`<span class="badge src-${a.source}">${a.source}</span>`);
+  if (a.upgradedFrom) badges.push(`<span class="badge upgraded" title="upgraded from ${escapeHtml(a.upgradedFrom)}">upgraded</span>`);
   if (errs) badges.push(`<span class="badge err">${errs} err</span>`);
   if (warns) badges.push(`<span class="badge warn">${warns} warn</span>`);
   if (!errs && !warns) badges.push(`<span class="badge ok">clean</span>`);
   const { renderOld, renderNew } = diffLines(e.raw.trim(), a.rewritten);
+  const scholarUrl = scholarSearchURL(e);
   const matchHtml = a.match ? `
     <div class="section">
-      <h4>Match (${a.source})</h4>
+      <h4>Match (${a.source})${a.upgradedFrom ? ` <span style="color:var(--muted);font-weight:normal">— upgraded from ${escapeHtml(a.upgradedFrom)}</span>` : ""}</h4>
       <div class="match-meta">
         <div class="k">title</div><div>${escapeHtml(a.match.title)}</div>
         <div class="k">authors</div><div>${escapeHtml(a.match.authors?.join(", ") || "(none)")}</div>
@@ -645,12 +736,17 @@ function renderEntry(a) {
         <div class="k">vol/num/pp</div><div>${escapeHtml(a.match.volume || "-")} / ${escapeHtml(a.match.number || "-")} / ${escapeHtml(a.match.pages || "-")}</div>
         <div class="k">meta</div><div style="font-family:var(--mono);font-size:11px;color:var(--muted)">${escapeHtml(a.match.rawMeta || "")}</div>
       </div>
-    </div>` : `<div class="section"><h4>Match</h4><p style="color:var(--muted)">No match found.</p></div>`;
+    </div>` : "";
   const issuesHtml = visible.length ? `
     <div class="section">
       <h4>Issues</h4>
       <ul>${visible.map(i => `<li><span class="badge ${i.severity === "error" ? "err" : "warn"}">${i.severity}</span> ${i.field ? `<code>${escapeHtml(i.field)}</code>: ` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
     </div>` : "";
+  const matchSection = a.match ? matchHtml : `
+    <div class="section">
+      <h4>Match</h4>
+      <p style="color:var(--muted)">No match found. Try <a href="${scholarUrl}" target="_blank" rel="noopener">Google Scholar search →</a></p>
+    </div>`;
   return `
     <article class="entry" data-key="${escapeHtml(e.citeKey)}">
       <div class="head">
@@ -659,7 +755,7 @@ function renderEntry(a) {
       </div>
       <div class="body">
         ${issuesHtml}
-        ${matchHtml}
+        ${matchSection}
         <div class="section">
           <h4>Original</h4>
           <pre class="bib">${renderOld}</pre>
@@ -721,11 +817,29 @@ async function runAudit() {
   };
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
+
+  // Cross-entry duplicate detection (by normalized title) over the full file.
+  const dupGroups = new Map();
+  for (const e of entries) {
+    const t = (e.fields.title || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!t) continue;
+    if (!dupGroups.has(t)) dupGroups.set(t, []);
+    dupGroups.get(t).push(e.citeKey);
+  }
+  const dupOf = new Map();
+  for (const keys of dupGroups.values()) {
+    if (keys.length > 1) for (const k of keys) dupOf.set(k, keys);
+  }
+
   const audited = [];
   for (let i = 0; i < targets.length; i++) {
     const e = targets[i];
     setStatus(`Auditing ${i + 1} / ${targets.length}: ${e.citeKey}`, ((i) / targets.length) * 100);
     const a = await auditOne(e, opts);
+    if (dupOf.has(e.citeKey)) {
+      const others = dupOf.get(e.citeKey).filter(k => k !== e.citeKey);
+      a.issues.push({ severity: "warning", field: "title", message: `possible duplicate of: ${others.join(", ")}` });
+    }
     audited.push(a);
     $("#results").insertAdjacentHTML("beforeend", renderEntry(a));
     // be polite to APIs
