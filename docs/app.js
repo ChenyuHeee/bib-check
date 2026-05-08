@@ -479,6 +479,72 @@ async function crossrefLookup(title, hint) {
   }
 }
 
+// ========== Semantic Scholar ==========
+
+const S2_BASE = "https://api.semanticscholar.org/graph/v1/paper/search";
+const S2_FIELDS = "title,authors,year,venue,publicationVenue,journal,externalIds,publicationTypes";
+
+async function s2Search(title, apiKey) {
+  const url = `${S2_BASE}?query=${encodeURIComponent(title)}&limit=10&fields=${encodeURIComponent(S2_FIELDS)}`;
+  const headers = { "Accept": "application/json" };
+  if (apiKey) headers["x-api-key"] = apiKey;
+  const resp = await fetch(url, { headers });
+  if (!resp.ok) throw new Error(`Semantic Scholar HTTP ${resp.status}`);
+  const data = await resp.json();
+  return data.data || [];
+}
+
+function s2ToResult(item) {
+  const authors = (item.authors || []).map(a => a.name).filter(Boolean);
+  const pv = item.publicationVenue || {};
+  const journal = item.journal || {};
+  let venue = pv.name || item.venue || journal.name || "";
+  const types = item.publicationTypes || [];
+  const isConf = (pv.type || "").toLowerCase() === "conference"
+    || types.some(t => /conference/i.test(t));
+  const isJournal = (pv.type || "").toLowerCase() === "journal"
+    || types.some(t => /journal/i.test(t));
+  let entryType = "article", venueKind = "journal";
+  if (isConf) { entryType = "inproceedings"; venueKind = "booktitle"; }
+  else if (isJournal) { entryType = "article"; venueKind = "journal"; }
+  // Treat arXiv-only entries as preprint.
+  const arxivOnly = item.externalIds && item.externalIds.ArXiv
+    && !item.externalIds.DOI && !venue;
+  if (arxivOnly) { venue = "arXiv preprint"; venueKind = "journal"; entryType = "article"; }
+  return {
+    title: item.title || "",
+    authors,
+    year: item.year ?? null,
+    venue,
+    venueKind,
+    volume: journal.volume || "",
+    number: "",
+    pages: journal.pages || "",
+    publisher: "",
+    entryType,
+    rawMeta: `S2 paperId=${item.paperId} venueType='${pv.type || "?"}'`,
+    isPreprint: arxivOnly || /arxiv|preprint|corr/i.test(venue || ""),
+  };
+}
+
+async function s2Lookup(title, hint, apiKey) {
+  try {
+    const items = await s2Search(title, apiKey);
+    let best = null, bestScore = 0;
+    for (const it of items) {
+      const r = s2ToResult(it);
+      if (!r.title) continue;
+      const score = tokenSetRatio(title, r.title);
+      if (score < 80) continue;
+      if (!authorOk(r, hint)) continue;
+      if (score > bestScore) { bestScore = score; best = r; }
+    }
+    return best;
+  } catch (e) {
+    return { __error: e.message };
+  }
+}
+
 // ========== Pipeline ==========
 
 async function auditOne(entry, opts) {
@@ -503,6 +569,20 @@ async function auditOne(entry, opts) {
           if (match && match.authors?.length) cr.authors = match.authors; // keep ordering
           match = cr; source = "crossref";
         }
+      }
+    }
+  }
+  if (title && opts.useS2 && (match === null || isPreprint(match))) {
+    const s2 = await s2Lookup(title, hint, opts.s2Key);
+    if (s2 && s2.__error) errors.push(`Semantic Scholar: ${s2.__error}`);
+    else if (s2) {
+      const score = tokenSortRatio(title, s2.title);
+      // Accept S2 if no match yet, or if it's a non-preprint upgrade.
+      if (match === null && score >= 80) {
+        match = s2; source = "s2";
+      } else if (match && isPreprint(match) && !isPreprint(s2) && score >= 88) {
+        if (match.authors?.length) s2.authors = match.authors;
+        match = s2; source = "s2";
       }
     }
   }
@@ -596,6 +676,7 @@ function renderSummary(audited) {
   const total = audited.length;
   const oa = audited.filter(a => a.source === "openalex").length;
   const cr = audited.filter(a => a.source === "crossref").length;
+  const s2 = audited.filter(a => a.source === "s2").length;
   const none = audited.filter(a => a.source === "none").length;
   const clean = audited.filter(a => !a.issues.some(i => i.severity === "error" || i.severity === "warning")).length;
   $("#summary").classList.remove("hidden");
@@ -604,6 +685,7 @@ function renderSummary(audited) {
     <div class="card"><div class="n" style="color:var(--good)">${clean}</div><div class="l">clean</div></div>
     <div class="card"><div class="n" style="color:var(--accent)">${oa}</div><div class="l">via OpenAlex</div></div>
     <div class="card"><div class="n" style="color:var(--good)">${cr}</div><div class="l">via Crossref</div></div>
+    <div class="card"><div class="n" style="color:var(--warn)">${s2}</div><div class="l">via S2</div></div>
     <div class="card"><div class="n" style="color:var(--bad)">${none}</div><div class="l">unmatched</div></div>`;
 }
 
@@ -631,7 +713,12 @@ async function runAudit() {
   if (!entries.length) { setStatus("No BibTeX entries found.", 100); return; }
   const range = parseRange($("#range").value, entries.length);
   const targets = range ? entries.filter(e => e.index >= range.a && e.index <= range.b) : entries;
-  const opts = { useOpenalex: $("#useOpenalex").checked, useCrossref: $("#useCrossref").checked };
+  const opts = {
+    useOpenalex: $("#useOpenalex").checked,
+    useCrossref: $("#useCrossref").checked,
+    useS2: $("#useS2").checked,
+    s2Key: $("#s2key").value.trim() || null,
+  };
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
   const audited = [];

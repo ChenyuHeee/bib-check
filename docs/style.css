@@ -130,6 +130,7 @@ button.primary:hover { filter: brightness(1.1); }
 }
 .badge.src-openalex { background: rgba(88,166,255,0.12); color: var(--accent); border-color: var(--accent); }
 .badge.src-crossref { background: rgba(63,185,80,0.12); color: var(--good); border-color: var(--good); }
+.badge.src-s2 { background: rgba(210,153,34,0.18); color: var(--warn); border-color: var(--warn); }
 .badge.src-none { background: rgba(248,81,73,0.12); color: var(--bad); border-color: var(--bad); }
 .badge.warn { background: rgba(210,153,34,0.12); color: var(--warn); border-color: var(--warn); }
 .badge.err { background: rgba(248,81,73,0.12); color: var(--bad); border-color: var(--bad); }
