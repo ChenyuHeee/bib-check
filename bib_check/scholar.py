@@ -69,7 +69,7 @@ class ScholarClient:
         cache_dir: str | Path = "cache",
         headless: bool = False,
         delay_seconds: float = 4.0,
-        max_results: int = 4,
+        max_results: int = 8,
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +173,14 @@ class ScholarClient:
         cards = self._page.locator("div.gs_r.gs_or")
         n = min(cards.count(), self.max_results)
         out: list[ScholarResult] = []
+        # Capture the cluster URLs first; clicking around invalidates locators.
+        cluster_urls: list[str | None] = []
+        for i in range(n):
+            try:
+                cluster_urls.append(self._cluster_url(cards.nth(i)))
+            except Exception:
+                cluster_urls.append(None)
+
         for i in range(n):
             try:
                 card = cards.nth(i)
@@ -185,6 +193,12 @@ class ScholarClient:
                     if not parsed.title:
                         parsed.title = title_text
                     out.append(parsed)
+                    # If this result is a preprint and has a cluster ("All N
+                    # versions") link, expand it and look for a published
+                    # variant.
+                    if parsed.venue and _looks_like_preprint(parsed.venue) and cluster_urls[i]:
+                        extras = self._fetch_cluster_versions(cluster_urls[i])
+                        out.extend(extras)
                 else:
                     authors, year, venue = _split_author_line(meta)
                     out.append(
@@ -200,6 +214,59 @@ class ScholarClient:
             except Exception as exc:  # noqa: BLE001
                 print(f"    [scholar] result #{i} skipped: {exc}", flush=True)
                 continue
+        return out
+
+    def _cluster_url(self, card) -> str | None:
+        """Return the 'All N versions' cluster URL for a result card, if any."""
+        links = card.locator("div.gs_flb a")
+        for j in range(links.count()):
+            try:
+                href = links.nth(j).get_attribute("href") or ""
+            except Exception:
+                continue
+            if "cluster=" in href:
+                return href if href.startswith("http") else "https://scholar.google.com" + href
+        return None
+
+    def _fetch_cluster_versions(self, cluster_url: str) -> list[ScholarResult]:
+        """Open a cluster page and pull BibTeX for up to 3 non-preprint versions."""
+        assert self._page is not None
+        out: list[ScholarResult] = []
+        try:
+            self._throttle()
+            self._page.goto(cluster_url, wait_until="domcontentloaded", timeout=30000)
+            self._maybe_solve_captcha()
+            self._page.wait_for_selector("div.gs_r.gs_or", timeout=10000)
+        except Exception:
+            self._page.go_back()
+            return out
+
+        cards = self._page.locator("div.gs_r.gs_or")
+        n = min(cards.count(), 6)
+        picked = 0
+        for i in range(n):
+            try:
+                card = cards.nth(i)
+                meta = self._safe_text(card, "div.gs_a")
+                # Cheap filter: skip cards whose meta clearly says arXiv/preprint.
+                if meta and _looks_like_preprint(meta):
+                    continue
+                bibtex = self._fetch_bibtex_for(card)
+                if not bibtex:
+                    continue
+                parsed = _parse_single_bibtex(bibtex)
+                parsed.raw_meta = meta
+                out.append(parsed)
+                picked += 1
+                if picked >= 3:
+                    break
+            except Exception:
+                continue
+        try:
+            self._page.go_back(wait_until="domcontentloaded", timeout=10000)
+            self._page.wait_for_selector("div.gs_r.gs_or", timeout=10000)
+        except Exception:
+            pass
         return out
 
     def _fetch_bibtex_for(self, card) -> str | None:
@@ -464,13 +531,23 @@ def _pick_best(target_title: str, results: list[ScholarResult]) -> ScholarResult
     best_score, best = scored[0]
     if best_score < 70:
         return None
-    # Prefer the highest-score result whose venue is not a preprint server.
-    for s, r in scored:
-        if s >= max(best_score - 5, 70) and r.venue and not _is_preprint(r.venue):
-            return r
+    # Prefer ANY title-matching result (score >= 80) whose venue is published.
+    published = [
+        (s, r)
+        for s, r in scored
+        if s >= 80 and r.venue and not _is_preprint(r.venue)
+    ]
+    if published:
+        # Among published candidates, take the one with highest score.
+        published.sort(key=lambda t: t[0], reverse=True)
+        return published[0][1]
     return best
 
 
 def _is_preprint(venue: str) -> bool:
     v = venue.lower()
     return any(h in v for h in _PREPRINT_HOSTS)
+
+
+# Alias used inside the class to avoid name shadowing.
+_looks_like_preprint = _is_preprint

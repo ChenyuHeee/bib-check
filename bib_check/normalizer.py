@@ -30,9 +30,13 @@ FORBIDDEN_FIELDS = {
     "abstract",
     "keywords",
     "month",
+    "note",
 }
 
-ARXIV_VENUE_HINTS = ("corr", "arxiv", "preprint", "techrxiv", "authorea")
+ARXIV_VENUE_HINTS = ("corr", "arxiv", "preprint", "techrxiv", "authorea", "ssrn")
+
+# arXiv-style "abs/2401.12345" pseudo-volume from DBLP/Scholar exports.
+_ARXIV_VOLUME_RE = re.compile(r"^\s*abs/\d{4}\.\d{4,5}\s*$", re.IGNORECASE)
 
 
 @dataclass
@@ -132,32 +136,47 @@ def rewrite(entry: BibEntry, scholar: dict | None) -> str:
     """Emit a normalized BibTeX entry string.
 
     Scholar metadata (when available) overrides the original for author /
-    title / year / venue / volume / number / pages.
+    title / year / venue / volume / number / pages. Scholar's entry_type
+    (article vs inproceedings) wins when set.
     """
     src = dict(entry.fields)
+    scholar_entry_type: str | None = None
 
     if scholar:
-        for k in ("author", "title", "year", "volume", "number", "pages"):
+        for k in ("author", "title", "year", "volume", "number", "pages", "publisher"):
             if scholar.get(k):
                 src[k] = scholar[k]
         venue = scholar.get("venue")
         venue_kind = scholar.get("venue_kind")  # 'journal' | 'booktitle' | None
         if venue and venue_kind:
-            # Move to the correct field, drop the other.
             other = "journal" if venue_kind == "booktitle" else "booktitle"
             src[venue_kind] = venue
             src.pop(other, None)
+        scholar_entry_type = scholar.get("entry_type")
 
     # Strip forbidden fields.
     for k in FORBIDDEN_FIELDS:
         src.pop(k, None)
 
-    # Decide entry type from the venue we ended up with.
-    entry_type = entry.entry_type
-    if "booktitle" in src and not src.get("journal"):
+    # Drop arXiv pseudo-volume (e.g. "abs/2401.12345") if we ended up on a
+    # preprint venue and have no real volume/number from Scholar.
+    journal = src.get("journal", "")
+    if journal and _looks_like_arxiv(journal):
+        if "volume" in src and _ARXIV_VOLUME_RE.match(src["volume"] or ""):
+            src.pop("volume", None)
+        # arXiv has no issue number / pages.
+        for k in ("number", "pages"):
+            src.pop(k, None)
+
+    # Decide entry type: prefer Scholar's, else infer from venue field.
+    if scholar_entry_type in {"article", "inproceedings", "book", "incollection", "techreport"}:
+        entry_type = scholar_entry_type
+    elif "booktitle" in src and not src.get("journal"):
         entry_type = "inproceedings"
     elif "journal" in src and not src.get("booktitle"):
         entry_type = "article"
+    else:
+        entry_type = entry.entry_type
 
     # Field ordering for stable output.
     if entry_type == "article":
