@@ -781,7 +781,11 @@ function isPreprint(r) { const v = (r?.venue || "").toLowerCase(); return PREPRI
 // when it drops a connection under load. Also enforces a per-attempt timeout
 // because Safari has a known bug where some concurrent cross-origin fetches
 // never resolve (no response, no error) — without this the whole audit stalls.
-// Honors Retry-After when the server provides it; otherwise exponential backoff.
+// Honors Retry-After when the server provides it, BUT capped at MAX_RETRY_WAIT
+// because some APIs (e.g. OpenAlex when its daily billing budget is exhausted)
+// return Retry-After values pointing hours into the future, which would
+// otherwise hang the audit forever. Returns the final Response.
+const MAX_RETRY_WAIT_MS = 8000;
 async function fetchWithRetry(url, options = {}, maxRetries = 3, perAttemptTimeoutMs = 15000) {
   let delayMs = 1000;
   let lastErr;
@@ -793,12 +797,17 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3, perAttemptTimeo
       clearTimeout(timer);
       if (resp.status !== 429 || attempt === maxRetries) return resp;
       const retryAfter = parseFloat(resp.headers.get("Retry-After") || "");
-      const wait = Number.isFinite(retryAfter) ? retryAfter * 1000 : delayMs;
+      let wait = Number.isFinite(retryAfter) ? retryAfter * 1000 : delayMs;
+      if (wait > MAX_RETRY_WAIT_MS) {
+        // Server is asking us to wait too long (likely a billing/quota
+        // reset, not a transient burst). Give up and let the caller
+        // surface the actual error to the user.
+        return resp;
+      }
       await new Promise(r => setTimeout(r, wait));
       delayMs *= 2;
     } catch (e) {
       clearTimeout(timer);
-      // Normalize abort to a clearer message.
       if (e.name === "AbortError") lastErr = new Error(`request timed out after ${perAttemptTimeoutMs}ms`);
       else lastErr = e;
       if (attempt === maxRetries) throw lastErr;
