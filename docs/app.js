@@ -1425,6 +1425,23 @@ function renderSummary(audited) {
       const list = _apiFailures.details[src] || [];
       if (!list.length) continue;
       detailRows.push(`<div class="api-fail-group"><strong>${src}</strong> (${list.length}):</div>`);
+      // If OpenAlex is failing and no polite-pool email is set, hint at it.
+      if (src === "openalex" && !($("#email")?.value || "").trim()) {
+        detailRows.push(`<div class="api-fail-row" style="background:rgba(255,200,0,0.08);border-left:3px solid #f5a623;padding:6px 10px;margin:4px 0;">
+          <strong>Tip:</strong> Add your email to the &ldquo;Email (OpenAlex polite pool)&rdquo; field above
+          to get ~10 req/s instead of the shared anonymous bucket. The email is sent only to OpenAlex per their
+          <a href="https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication" target="_blank" rel="noopener">polite pool policy</a>.
+        </div>`);
+      }
+      // If S2 is failing and no API key is set, add a hint with the
+      // application link so users know how to fix the rate limiting.
+      if (src === "s2" && !($("#s2key")?.value || "").trim()) {
+        detailRows.push(`<div class="api-fail-row" style="background:rgba(255,200,0,0.08);border-left:3px solid #f5a623;padding:6px 10px;margin:4px 0;">
+          <strong>Tip:</strong> Semantic Scholar's anonymous pool is shared globally (~1 req/s) and frequently drops connections under load.
+          Get a free API key at <a href="https://www.semanticscholar.org/product/api#api-key-form" target="_blank" rel="noopener">semanticscholar.org/product/api</a>
+          and paste it into the &ldquo;S2 key&rdquo; field above.
+        </div>`);
+      }
       // Group by error message so 5 identical "Load failed" collapse into one row.
       const byMsg = new Map();
       for (const { citeKey, msg } of list) {
