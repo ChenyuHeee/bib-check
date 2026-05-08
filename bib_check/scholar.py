@@ -68,14 +68,19 @@ class ScholarClient:
         self,
         cache_dir: str | Path = "cache",
         headless: bool = False,
-        delay_seconds: float = 4.0,
+        delay_seconds: float = 8.0,
         max_results: int = 8,
+        profile_dir: str | Path | None = None,
     ) -> None:
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.headless = headless
         self.delay_seconds = delay_seconds
         self.max_results = max_results
+        # Persistent Chromium profile so cookies / CAPTCHA solves survive
+        # between runs.
+        self.profile_dir = Path(profile_dir) if profile_dir else self.cache_dir / "_profile"
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._pw = None
         self._browser = None
         self._context = None
@@ -88,8 +93,11 @@ class ScholarClient:
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=self.headless)
-        self._context = self._browser.new_context(
+        # launch_persistent_context keeps cookies in self.profile_dir, so
+        # one CAPTCHA solve covers later runs as well.
+        self._context = self._pw.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir),
+            headless=self.headless,
             user_agent=(
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -97,13 +105,14 @@ class ScholarClient:
             ),
             viewport={"width": 1280, "height": 900},
         )
-        self._page = self._context.new_page()
+        self._browser = self._context.browser
+        self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         return self
 
     def __exit__(self, *exc: Any) -> None:
         try:
-            if self._browser:
-                self._browser.close()
+            if self._context:
+                self._context.close()
         finally:
             if self._pw:
                 self._pw.stop()
@@ -317,13 +326,31 @@ class ScholarClient:
             new_page = self._context.new_page()
             new_page.goto(href, wait_until="domcontentloaded", timeout=20000)
             body = new_page.content()
+            # If Scholar served a 'sorry' / unusual-traffic page in the new
+            # tab, route the user through the visible solver and retry once.
+            if (
+                "unusual traffic from your computer network" in body.lower()
+                or "/sorry/" in (new_page.url or "")
+            ):
+                print(
+                    "\n[scholar] CAPTCHA on BibTeX export page. Solve it in "
+                    "the open tab, then press Enter to continue.",
+                    flush=True,
+                )
+                try:
+                    input()
+                except EOFError:
+                    pass
+                try:
+                    new_page.reload(wait_until="domcontentloaded", timeout=20000)
+                    body = new_page.content()
+                except Exception:
+                    body = ""
             new_page.close()
-            # Scholar serves BibTeX as text/plain inside a <pre> wrapper.
             m = re.search(r"<pre[^>]*>(.*?)</pre>", body, re.DOTALL | re.IGNORECASE)
             if m:
                 text = _html_unescape(m.group(1)).strip()
             else:
-                # Sometimes the response is raw text, surfaced directly.
                 stripped = re.sub(r"<[^>]+>", "", body).strip()
                 if stripped.startswith("@"):
                     text = stripped
@@ -347,27 +374,51 @@ class ScholarClient:
             except Exception:
                 pass
 
-    def _maybe_solve_captcha(self) -> None:
+    def _maybe_solve_captcha(self) -> bool:
+        """If a CAPTCHA / 'unusual traffic' page is shown, block until solved.
+
+        Returns True if a CAPTCHA was encountered (and presumably solved).
+        """
         assert self._page is not None
         try:
-            html = self._page.content().lower()
+            url = self._page.url or ""
+            html = self._page.content()
         except Exception:
-            return
-        if (
-            "unusual traffic" in html
-            or "please show you're not a robot" in html
-            or "/sorry/" in (self._page.url or "")
-        ):
+            return False
+        low = html.lower()
+        triggered = (
+            "unusual traffic from your computer network" in low
+            or "please show you're not a robot" in low
+            or "/sorry/" in url
+            or "recaptcha" in low
+        )
+        if not triggered:
+            return False
+        # Force visible browser if currently headless: re-launch is too
+        # invasive, so just instruct the user.
+        if self.headless:
             print(
-                "\n[scholar] CAPTCHA detected. Solve it in the open browser, "
-                "then press Enter here to continue.",
+                "\n[scholar] CAPTCHA hit while running headless. Re-run with "
+                "--no-headless to solve it interactively.",
                 flush=True,
             )
+            raise RuntimeError("Scholar CAPTCHA blocked headless run")
+        print(
+            "\n[scholar] CAPTCHA / 'unusual traffic' page detected.\n"
+            "  Solve it in the open Chromium window, then press Enter here "
+            "to continue. (Cookies are persisted in cache/_profile so you "
+            "shouldn't need to redo it next run.)",
+            flush=True,
+        )
+        try:
             input()
-            try:
-                self._page.wait_for_load_state("domcontentloaded")
-            except Exception:
-                pass
+        except EOFError:
+            pass
+        try:
+            self._page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception:
+            pass
+        return True
 
     @staticmethod
     def _safe_text(card, selector: str) -> str:
