@@ -848,6 +848,68 @@ async function runAudit() {
   setStatus(`Done. Audited ${audited.length} entries.`, 100);
   renderSummary(audited);
   setupExports(audited);
+  saveState(text, opts, audited);
+}
+
+// ========== Persistence (localStorage) ==========
+
+const LS_KEY = "bibcheck.state.v1";
+
+function saveState(bibText, opts, audited) {
+  try {
+    const payload = {
+      savedAt: new Date().toISOString(),
+      bib: bibText,
+      range: $("#range").value,
+      opts,
+      audited: audited.map(a => ({
+        entry: a.entry,
+        issues: a.issues,
+        match: a.match,
+        source: a.source,
+        rewritten: a.rewritten,
+        upgradedFrom: a.upgradedFrom,
+      })),
+    };
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
+  } catch (e) {
+    console.warn("saveState failed:", e);
+  }
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (e) {
+    console.warn("loadState failed:", e);
+    return null;
+  }
+}
+
+function clearState() {
+  try { localStorage.removeItem(LS_KEY); } catch {}
+}
+
+function restoreFromState() {
+  const s = loadState();
+  if (!s) return;
+  if (s.bib) $("#bib").value = s.bib;
+  if (typeof s.range === "string") $("#range").value = s.range;
+  if (s.opts) {
+    if ("useOpenalex" in s.opts) $("#useOpenalex").checked = !!s.opts.useOpenalex;
+    if ("useCrossref" in s.opts) $("#useCrossref").checked = !!s.opts.useCrossref;
+    if ("useS2" in s.opts) $("#useS2").checked = !!s.opts.useS2;
+    if (s.opts.s2Key) $("#s2key").value = s.opts.s2Key;
+  }
+  if (Array.isArray(s.audited) && s.audited.length) {
+    $("#results").innerHTML = s.audited.map(renderEntry).join("");
+    renderSummary(s.audited);
+    setupExports(s.audited);
+    const when = s.savedAt ? new Date(s.savedAt).toLocaleString() : "previous run";
+    setStatus(`Restored ${s.audited.length} entries from ${when}. Click "Run audit" to refresh.`, 100);
+  }
 }
 
 function download(name, text, mime = "text/plain") {
@@ -944,3 +1006,29 @@ $("#loadSample").addEventListener("click", () => {
   year = {2023}
 }`;
 });
+
+// Persist bib input as user edits (debounced) so refresh keeps text even
+// before running an audit.
+let _bibSaveTimer = null;
+$("#bib").addEventListener("input", () => {
+  clearTimeout(_bibSaveTimer);
+  _bibSaveTimer = setTimeout(() => {
+    try {
+      const prev = loadState() || {};
+      prev.bib = $("#bib").value;
+      prev.range = $("#range").value;
+      localStorage.setItem(LS_KEY, JSON.stringify(prev));
+    } catch {}
+  }, 400);
+});
+
+$("#clearSaved").addEventListener("click", () => {
+  if (!confirm("Clear saved bib input and audit results from this browser?")) return;
+  clearState();
+  $("#results").innerHTML = "";
+  $("#summary").classList.add("hidden");
+  setStatus("Saved state cleared.", 100);
+});
+
+// Restore previous session on page load.
+restoreFromState();
