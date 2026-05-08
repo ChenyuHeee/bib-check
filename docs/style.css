@@ -170,6 +170,7 @@ button.primary {
 }
 button.primary:hover { filter: brightness(1.12); }
 button.primary:active { filter: brightness(0.92); }
+button:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
 button.icon-only {
   padding: 5px 8px;
   border: none;

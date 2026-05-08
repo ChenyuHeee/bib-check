@@ -1302,8 +1302,16 @@ function parseRange(s, max) {
 
 const CONCURRENCY = 3;
 const INTER_BATCH_MS = 150;
+let _auditRunning = false;
 
 async function runAudit() {
+  if (_auditRunning) return;
+  _auditRunning = true;
+  const runBtn = $("#run");
+  runBtn.disabled = true;
+  runBtn.textContent = "Running…";
+
+  try {
   const text = $("#bib").value;
   const entries = parseBib(text);
   if (!entries.length) { setStatus("No BibTeX entries found.", 100); return; }
@@ -1366,6 +1374,12 @@ async function runAudit() {
   // Sort audited back to original order for exports/persistence
   audited.sort((a, b) => a.entry.index - b.entry.index);
   saveState(text, opts, audited);
+
+  } finally {
+    _auditRunning = false;
+    runBtn.disabled = false;
+    runBtn.textContent = "Audit";
+  }
 }
 
 // ========== Persistence (localStorage) ==========
