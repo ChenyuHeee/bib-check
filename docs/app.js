@@ -138,6 +138,107 @@ function expandVenueAcronym(venue) {
   return VENUE_FULL_NAME[m[1].toLowerCase()] ?? venue;
 }
 
+// Inline abbreviation dictionary borrowed from refchecker/utils/text_utils.py
+// (CC-BY/MIT spirit: short factual mapping table). Used to *normalize* venue
+// strings before fuzzy matching so e.g. "Phys. Rev. Lett." matches "Physical
+// Review Letters".
+const VENUE_ABBREVS = {
+  // IEEE
+  "robot.": "robotics", "autom.": "automation", "lett.": "letters",
+  "trans.": "transactions", "syst.": "systems", "netw.": "networks",
+  "learn.": "learning", "ind.": "industrial", "electron.": "electronics",
+  "mechatron.": "mechatronics", "intell.": "intelligence",
+  "transp.": "transportation", "contr.": "control", "mag.": "magazine",
+  // General
+  "int.": "international", "intl.": "international", "conf.": "conference",
+  "j.": "journal", "proc.": "proceedings", "assoc.": "association",
+  "comput.": "computing", "sci.": "science", "eng.": "engineering",
+  "tech.": "technology", "artif.": "artificial", "mach.": "machine",
+  "stat.": "statistics", "math.": "mathematics", "phys.": "physics",
+  "chem.": "chemistry", "bio.": "biology", "med.": "medicine",
+  "adv.": "advances", "ann.": "annual", "symp.": "symposium",
+  "natl.": "national", "acad.": "academy", "rev.": "review",
+  "worksh.": "workshop",
+  // Physics multi-word (apply before single-word forms)
+  "phys. rev. lett.": "physical review letters",
+  "phys. rev. a": "physical review a", "phys. rev. b": "physical review b",
+  "phys. rev. c": "physical review c", "phys. rev. d": "physical review d",
+  "phys. rev. e": "physical review e", "phys. rev.": "physical review",
+  "phys. lett. b": "physics letters b", "phys. lett.": "physics letters",
+  "nucl. phys. a": "nuclear physics a", "nucl. phys. b": "nuclear physics b",
+  "nucl. phys.": "nuclear physics",
+  "j. phys.": "journal of physics", "ann. phys.": "annals of physics",
+  "mod. phys. lett.": "modern physics letters",
+  "eur. phys. j.": "european physical journal",
+  "j. comput. neurosci.": "journal of computational neuroscience",
+  "nature phys.": "nature physics", "sci. adv.": "science advances",
+  "proc. natl. acad. sci.": "proceedings of the national academy of sciences",
+  "pnas": "proceedings of the national academy of sciences",
+  "neurips": "neural information processing systems",
+};
+const _VENUE_ABBREV_KEYS_SORTED = Object.keys(VENUE_ABBREVS)
+  .sort((a, b) => b.length - a.length); // longest first
+function expandVenueAbbrevs(text) {
+  if (!text) return text;
+  let out = text;
+  for (const k of _VENUE_ABBREV_KEYS_SORTED) {
+    const esc = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = k.endsWith(".") ? new RegExp("\\b" + esc, "gi")
+                               : new RegExp("\\b" + esc + "\\b", "gi");
+    out = out.replace(re, VENUE_ABBREVS[k]);
+  }
+  return out;
+}
+
+// Strip LaTeX commands and braces before fuzzy comparison so "{B-ERT}" /
+// "{\\\"u}ber" don't cause false mismatches against API-side "BERT" / "über".
+const LATEX_ACCENTS = {
+  '\\"a': "ä", "\\'a": "á", "\\`a": "à", "\\^a": "â", "\\~a": "ã",
+  '\\"o': "ö", "\\'o": "ó", "\\`o": "ò", "\\^o": "ô", "\\~o": "õ",
+  '\\"u': "ü", "\\'u": "ú", "\\`u": "ù", "\\^u": "û",
+  '\\"e': "ë", "\\'e": "é", "\\`e": "è", "\\^e": "ê",
+  '\\"i': "ï", "\\'i": "í", "\\`i": "ì", "\\^i": "î",
+  "\\ss": "ß", "\\&": "&",
+};
+function stripLatex(s) {
+  if (!s) return s;
+  let out = s;
+  // Resolve common accent macros (with optional surrounding braces).
+  for (const [k, v] of Object.entries(LATEX_ACCENTS)) {
+    out = out.replaceAll("{" + k + "}", v).replaceAll(k, v);
+  }
+  // Remove generic \cmd[...]{...} or \cmd{...}: keep contents.
+  out = out.replace(/\\[a-zA-Z]+\s*\*?\s*(\[[^\]]*\])?\s*\{([^{}]*)\}/g, "$2");
+  // Remove leftover \cmd tokens with no args.
+  out = out.replace(/\\[a-zA-Z]+\*?/g, "");
+  // Remove dollar math toggles, tilde non-breaking spaces.
+  out = out.replace(/[$~^_]/g, " ");
+  // Drop remaining braces.
+  out = out.replace(/[{}]/g, "");
+  return out;
+}
+
+// Split BibTeX author field on " and " (preferred) or "; " (DBLP-style).
+function splitAuthors(s) {
+  if (!s) return [];
+  const trimmed = s.trim();
+  if (/\sand\s/i.test(trimmed)) return trimmed.split(/\s+and\s+/i).map(x => x.trim()).filter(Boolean);
+  if (trimmed.includes(";")) return trimmed.split(/\s*;\s*/).map(x => x.trim()).filter(Boolean);
+  return [trimmed];
+}
+
+// arXiv ID extraction (modern format only). Returns {id, version} or null.
+const ARXIV_ID_RE = /(?:arxiv[:\s/]*|abs\/)?(\d{4}\.\d{4,5})(v(\d+))?/i;
+function extractArxivId(entry) {
+  const candidates = [entry.fields.eprint, entry.fields.url, entry.fields.howpublished, entry.fields.note, entry.fields.journal, entry.fields.volume];
+  for (const c of candidates) {
+    if (!c) continue;
+    const m = ARXIV_ID_RE.exec(c);
+    if (m) return { id: m[1], version: m[3] ? parseInt(m[3], 10) : null, raw: m[0] };
+  }
+  return null;
+}
+
 const ARXIV_VOLUME_RE = /^\s*abs\/\d{4}\.\d{4,5}\s*$/i;
 
 function looksLikeArxiv(venue) {
@@ -175,7 +276,7 @@ function normalizeOneName(name) {
 }
 
 function normalizeAuthors(authorField) {
-  return authorField.split(/\s+and\s+/).map(p => p.trim()).filter(Boolean).map(normalizeOneName).join(" and ");
+  return splitAuthors(authorField).map(normalizeOneName).join(" and ");
 }
 
 const ANON_PATTERNS = [
@@ -248,6 +349,27 @@ function detectIssues(entry) {
       if (!f[k]) issues.push({ severity: "warning", field: k, message: `missing ${k}` });
     }
   }
+  // Hidden-venue check: @inproceedings/@misc with venue buried in note/howpublished.
+  if (!f.booktitle && !f.journal) {
+    const buried = `${f.note || ""} ${f.howpublished || ""}`.toLowerCase();
+    if (/conference|workshop|proceedings|symposium|published in/i.test(buried)) {
+      issues.push({ severity: "warning", field: "booktitle", message: "venue appears to be in note/howpublished; move to booktitle/journal" });
+    }
+  }
+  // Entry-type inference vs declared type.
+  const declaredType = entry.entryType;
+  let inferred = null;
+  if (f.journal && !f.booktitle) inferred = "article";
+  else if (f.booktitle && !f.journal) inferred = "inproceedings";
+  if (inferred && declaredType && declaredType !== inferred && declaredType !== "misc") {
+    issues.push({ severity: "warning", field: null, message: `entry type @${declaredType} but fields suggest @${inferred}` });
+  }
+  if (f.doi && /^10\.5281\/zenodo\./i.test(f.doi.trim()) && declaredType !== "misc" && declaredType !== "dataset") {
+    issues.push({ severity: "warning", field: null, message: `Zenodo DOI but type is @${declaredType}; consider @misc` });
+  }
+  if (f.title && /^proceedings of/i.test(f.title.trim()) && declaredType === "article") {
+    issues.push({ severity: "warning", field: null, message: `title starts with 'Proceedings of' but type is @article; consider @proceedings or @inproceedings` });
+  }
   return issues;
 }
 
@@ -299,7 +421,10 @@ function rewrite(entry, scholar) {
 // ========== Title-match (token sort ratio) ==========
 
 function tokenize(s) {
-  return (s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
+  // Strip LaTeX and expand venue abbreviations BEFORE lowercase tokenizing so
+  // "{B-ERT}" -> "bert" and "Phys. Rev. Lett." -> "physical review letters".
+  s = expandVenueAbbrevs(stripLatex(s || ""));
+  return s.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter(Boolean);
 }
 
 function levenshtein(a, b) {
@@ -593,6 +718,57 @@ async function s2Lookup(title, hint, apiKey) {
   }
 }
 
+// arXiv export API (CORS-enabled). Returns latest version number for an
+// arXiv ID, or null on failure. Cached per id.
+const _arxivVersionCache = new Map();
+async function arxivLatestVersion(id) {
+  if (_arxivVersionCache.has(id)) return _arxivVersionCache.get(id);
+  try {
+    const res = await fetch(`https://export.arxiv.org/api/query?id_list=${encodeURIComponent(id)}`);
+    if (!res.ok) { _arxivVersionCache.set(id, null); return null; }
+    const text = await res.text();
+    // Match <id>http://arxiv.org/abs/2001.08361v3</id>
+    const m = /<id>\s*https?:\/\/arxiv\.org\/abs\/[^<]*v(\d+)\s*<\/id>/i.exec(text);
+    const v = m ? parseInt(m[1], 10) : null;
+    _arxivVersionCache.set(id, v);
+    return v;
+  } catch {
+    _arxivVersionCache.set(id, null);
+    return null;
+  }
+}
+
+// ========== LLM hallucination check (opt-in, requires OpenAI key) ==========
+//
+// For unmatched references we ask a small LLM to assess whether the citation
+// looks fabricated. The model is asked to return strict JSON. We never send
+// content other than fields already in the user's bib.
+async function llmHallucinationCheck(entry, apiKey, model = "gpt-4o-mini") {
+  const f = entry.fields;
+  const userMsg = `Assess whether the following BibTeX reference describes a real academic work. Reply ONLY with strict JSON: {"verdict":"real|likely_real|uncertain|likely_fabricated","reason":"<=200 chars","best_known_venue":"<=80 chars or empty","best_known_year":"YYYY or empty"}.\n\nTitle: ${f.title || "(missing)"}\nAuthors: ${f.author || "(missing)"}\nYear: ${f.year || "(missing)"}\nVenue: ${f.booktitle || f.journal || "(missing)"}\nDOI: ${f.doi || "(none)"}\narXiv: ${f.eprint || "(none)"}`;
+  const body = {
+    model,
+    response_format: { type: "json_object" },
+    temperature: 0,
+    messages: [
+      { role: "system", content: "You are a meticulous research librarian. You must not invent references. If you do not recognise the work from training data, return verdict=uncertain or likely_fabricated and explain briefly. Never claim a paper is real unless you are confident." },
+      { role: "user", content: userMsg },
+    ],
+  };
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`OpenAI ${res.status}: ${txt.slice(0, 160)}`);
+  }
+  const j = await res.json();
+  const content = j.choices?.[0]?.message?.content || "{}";
+  try { return JSON.parse(content); } catch { return { verdict: "uncertain", reason: "non-JSON LLM reply" }; }
+}
+
 // ========== Pipeline ==========
 
 async function auditOne(entry, opts) {
@@ -602,6 +778,15 @@ async function auditOne(entry, opts) {
   let match = null, source = "none";
   let upgradedFrom = null;
   const errors = [];
+
+  // arXiv version freshness check (only if entry has an explicit version like v2).
+  const arxivInfo = extractArxivId(entry);
+  if (arxivInfo && arxivInfo.version != null) {
+    const latest = await arxivLatestVersion(arxivInfo.id);
+    if (latest && latest > arxivInfo.version) {
+      issues.push({ severity: "warning", field: "eprint", message: `cites arXiv:${arxivInfo.id}v${arxivInfo.version}; latest is v${latest}` });
+    }
+  }
 
   if (title && opts.useOpenalex) {
     const r = await openalexLookup(title, hint);
@@ -639,22 +824,39 @@ async function auditOne(entry, opts) {
   }
   for (const e of errors) issues.push({ severity: "warning", field: null, message: e });
 
-  // Author-diff vs match (count / membership / order).
+  // Author-diff vs match (count / membership / order). Differences are
+  // classified by similarity so cosmetic deviations don't raise false alarms.
   if (match && match.authors?.length) {
     const bibLast = extractAuthorLastnames(entry.fields.author || "");
     const matchLast = match.authors.map(authorLastname).filter(Boolean);
     if (bibLast.length && matchLast.length) {
+      // Pair-up by index to detect "near match" (typo / hyphen / accent) vs
+      // genuinely different surnames.
+      const fuzzyEq = (a, b) => {
+        if (a === b) return true;
+        if (!a || !b) return false;
+        if (a.startsWith(b) || b.startsWith(a)) return true;
+        const dist = levenshtein(a, b);
+        return dist <= Math.max(1, Math.floor(Math.min(a.length, b.length) * 0.15));
+      };
       const bibSet = new Set(bibLast), matchSet = new Set(matchLast);
-      const missing = matchLast.filter(x => !bibSet.has(x));
-      const extra = bibLast.filter(x => !matchSet.has(x));
+      const missing = matchLast.filter(x => !bibSet.has(x) && !bibLast.some(y => fuzzyEq(x, y)));
+      const extra = bibLast.filter(x => !matchSet.has(x) && !matchLast.some(y => fuzzyEq(x, y)));
       if (bibLast.length !== matchLast.length) {
-        issues.push({ severity: "warning", field: "author", message: `author count differs: bib=${bibLast.length}, ${source}=${matchLast.length}` });
+        const sev = Math.abs(bibLast.length - matchLast.length) >= 2 ? "warning" : "info";
+        issues.push({ severity: sev, field: "author", message: `author count differs: bib=${bibLast.length}, ${source}=${matchLast.length}` });
       }
       if (missing.length) issues.push({ severity: "warning", field: "author", message: `authors in ${source} but missing from bib: ${missing.join(", ")}` });
       if (extra.length) issues.push({ severity: "warning", field: "author", message: `authors in bib but not in ${source}: ${extra.join(", ")}` });
       if (!missing.length && !extra.length && bibLast.length === matchLast.length) {
-        const orderDiffers = bibLast.some((x, i) => x !== matchLast[i]);
-        if (orderDiffers) issues.push({ severity: "warning", field: "author", message: `author order differs from ${source}` });
+        let orderDiffs = 0, fuzzyDiffs = 0;
+        for (let i = 0; i < bibLast.length; i++) {
+          if (bibLast[i] === matchLast[i]) continue;
+          if (fuzzyEq(bibLast[i], matchLast[i])) { fuzzyDiffs++; continue; }
+          orderDiffs++;
+        }
+        if (orderDiffs) issues.push({ severity: "warning", field: "author", message: `author order differs from ${source}` });
+        else if (fuzzyDiffs) issues.push({ severity: "info", field: "author", message: `${fuzzyDiffs} author surname(s) have minor spelling differences vs ${source}` });
       }
     }
   }
@@ -676,8 +878,8 @@ async function auditOne(entry, opts) {
 }
 
 function extractAuthorLastnames(authorsStr) {
-  return authorsStr.split(/\s+and\s+/i).map(s => s.trim()).filter(Boolean).map(a => {
-    a = a.replace(/[{}]/g, "");
+  return splitAuthors(authorsStr).map(a => {
+    a = stripLatex(a);
     let last;
     if (a.includes(",")) last = a.split(",")[0].trim();
     else { const t = a.split(/\s+/); last = t[t.length - 1]; }
@@ -701,8 +903,7 @@ function escapeHtml(s) {
 }
 
 function diffLines(oldText, newText) {
-  // Simple line-level diff: highlight lines that don't appear verbatim in the
-  // other side. Good enough for visualizing field-level changes.
+  // Backwards-compat: still expose the side-by-side highlight if needed.
   const oldLines = oldText.split("\n");
   const newLines = newText.split("\n");
   const oldSet = new Set(oldLines.map(l => l.trim()));
@@ -712,11 +913,54 @@ function diffLines(oldText, newText) {
   return { renderOld, renderNew };
 }
 
+// Git-style unified diff via LCS. Returns an array of {tag:" "|"-"|"+", line:string}.
+function unifiedDiff(oldText, newText) {
+  const a = oldText.split("\n");
+  const b = newText.split("\n");
+  const n = a.length, m = b.length;
+  // LCS table (rows = n+1, cols = m+1).
+  const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push({ tag: " ", line: a[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ tag: "-", line: a[i] }); i++; }
+    else { out.push({ tag: "+", line: b[j] }); j++; }
+  }
+  while (i < n) out.push({ tag: "-", line: a[i++] });
+  while (j < m) out.push({ tag: "+", line: b[j++] });
+  return out;
+}
+
+function renderUnifiedDiff(oldText, newText) {
+  const diff = unifiedDiff(oldText, newText);
+  const adds = diff.filter(d => d.tag === "+").length;
+  const dels = diff.filter(d => d.tag === "-").length;
+  if (!adds && !dels) {
+    return `<pre class="bib diff diff-empty">${escapeHtml(oldText)}</pre>`;
+  }
+  let oldLn = 0, newLn = 0;
+  const rows = diff.map(d => {
+    let oldNum = "", newNum = "", cls;
+    if (d.tag === " ") { oldLn++; newLn++; oldNum = oldLn; newNum = newLn; cls = "ctx"; }
+    else if (d.tag === "-") { oldLn++; oldNum = oldLn; cls = "del"; }
+    else { newLn++; newNum = newLn; cls = "add"; }
+    return `<div class="d-row d-${cls}"><span class="d-ln d-ln-old">${oldNum}</span><span class="d-ln d-ln-new">${newNum}</span><span class="d-sign">${d.tag}</span><span class="d-line">${escapeHtml(d.line) || "&nbsp;"}</span></div>`;
+  }).join("");
+  return `<div class="diff-block"><div class="diff-header"><span class="d-stat add">+${adds}</span> <span class="d-stat del">-${dels}</span></div><div class="diff-body">${rows}</div></div>`;
+}
+
 function renderEntry(a) {
   const e = a.entry;
   const errs = a.issues.filter(i => i.severity === "error").length;
   const warns = a.issues.filter(i => i.severity === "warning").length;
-  const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning");
+  const infos = a.issues.filter(i => i.severity === "info").length;
+  const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning" || i.severity === "info");
   const badges = [];
   badges.push(`<span class="badge src-${a.source}">${a.source}</span>`);
   if (a.upgradedFrom) badges.push(`<span class="badge upgraded" title="upgraded from ${escapeHtml(a.upgradedFrom)}">upgraded</span>`);
@@ -724,6 +968,7 @@ function renderEntry(a) {
   if (warns) badges.push(`<span class="badge warn">${warns} warn</span>`);
   if (!errs && !warns) badges.push(`<span class="badge ok">clean</span>`);
   const { renderOld, renderNew } = diffLines(e.raw.trim(), a.rewritten);
+  const unified = renderUnifiedDiff(e.raw.trim(), a.rewritten);
   const scholarUrl = scholarSearchURL(e);
   const matchHtml = a.match ? `
     <div class="section">
@@ -740,7 +985,7 @@ function renderEntry(a) {
   const issuesHtml = visible.length ? `
     <div class="section">
       <h4>Issues</h4>
-      <ul>${visible.map(i => `<li><span class="badge ${i.severity === "error" ? "err" : "warn"}">${i.severity}</span> ${i.field ? `<code>${escapeHtml(i.field)}</code>: ` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
+      <ul>${visible.map(i => `<li><span class="badge ${i.severity === "error" ? "err" : i.severity === "warning" ? "warn" : "info"}">${i.severity}</span> ${i.field ? `<code>${escapeHtml(i.field)}</code>: ` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
     </div>` : "";
   const matchSection = a.match ? matchHtml : `
     <div class="section">
@@ -757,12 +1002,9 @@ function renderEntry(a) {
         ${issuesHtml}
         ${matchSection}
         <div class="section">
-          <h4>Original</h4>
-          <pre class="bib">${renderOld}</pre>
-        </div>
-        <div class="section">
-          <h4>Suggested <button class="copy-btn" data-copy="suggested">Copy</button></h4>
-          <pre class="bib" data-suggested>${renderNew}</pre>
+          <h4>Diff (original → suggested) <button class="copy-btn" data-copy="suggested">Copy suggested</button></h4>
+          ${unified}
+          <pre class="bib hidden" data-suggested>${escapeHtml(a.rewritten)}</pre>
         </div>
       </div>
     </article>`;
@@ -943,11 +1185,11 @@ function buildMarkdown(audited) {
   for (const a of audited) {
     const e = a.entry;
     lines.push(`## [${e.index}] \`${e.citeKey}\` (line ${e.lineNumber}) — source: ${a.source}`, "");
-    const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning");
+    const visible = a.issues.filter(i => i.severity === "error" || i.severity === "warning" || i.severity === "info");
     if (visible.length) {
       lines.push("**Issues**");
       for (const i of visible) {
-        const tag = i.severity === "error" ? "❌" : "⚠️";
+        const tag = i.severity === "error" ? "❌" : i.severity === "warning" ? "⚠️" : "ℹ️";
         lines.push(`- ${tag} ${i.field ? `\`${i.field}\`: ` : ""}${i.message}`);
       }
       lines.push("");

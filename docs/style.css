@@ -137,6 +137,7 @@ button.primary:hover { filter: brightness(1.1); }
 .badge.src-none { background: rgba(248,81,73,0.12); color: var(--bad); border-color: var(--bad); }
 .badge.upgraded { background: rgba(88,166,255,0.18); color: var(--info); border-color: var(--info); }
 .badge.warn { background: rgba(210,153,34,0.12); color: var(--warn); border-color: var(--warn); }
+.badge.info { background: rgba(88,166,255,0.10); color: var(--info); border-color: var(--info); }
 .badge.err { background: rgba(248,81,73,0.12); color: var(--bad); border-color: var(--bad); }
 .badge.ok { background: rgba(63,185,80,0.12); color: var(--good); border-color: var(--good); }
 
@@ -167,6 +168,41 @@ pre.bib .del { background: rgba(248,81,73,0.18); text-decoration: line-through; 
 .copy-btn { float: right; font-size: 11px; padding: 2px 8px; }
 
 .hidden { display: none; }
+
+/* Git-style unified diff */
+.diff-block {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: 12px/1.5 var(--mono);
+  overflow: hidden;
+}
+.diff-header {
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0,0,0,0.15);
+  font-size: 11px;
+}
+.diff-header .d-stat.add { color: var(--good); margin-right: 8px; }
+.diff-header .d-stat.del { color: var(--bad); }
+.diff-body { padding: 4px 0; }
+.d-row {
+  display: grid;
+  grid-template-columns: 40px 40px 18px 1fr;
+  align-items: baseline;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.d-row .d-ln { color: var(--muted); text-align: right; padding-right: 6px; user-select: none; font-size: 11px; opacity: 0.7; }
+.d-row .d-sign { color: var(--muted); text-align: center; user-select: none; }
+.d-row .d-line { white-space: pre-wrap; }
+.d-row.d-add { background: rgba(63,185,80,0.10); }
+.d-row.d-add .d-sign, .d-row.d-add .d-line { color: var(--good); }
+.d-row.d-del { background: rgba(248,81,73,0.10); }
+.d-row.d-del .d-sign, .d-row.d-del .d-line { color: var(--bad); }
+.d-row.d-ctx .d-line { color: var(--text); }
+pre.bib.diff-empty { color: var(--muted); }
 
 footer {
   border-top: 1px solid var(--border);
