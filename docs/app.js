@@ -776,30 +776,19 @@ const PREPRINT_VENUE_HINTS = ["arxiv", "biorxiv", "ssrn", "techrxiv", "authorea"
 
 function isPreprint(r) { const v = (r?.venue || "").toLowerCase(); return PREPRINT_VENUE_HINTS.some(h => v.includes(h)); }
 
-// Fetch with automatic retry on HTTP 429 (rate limit) AND on network-level
-// TypeError ("Failed to fetch") which Semantic Scholar in particular emits
-// when it drops a connection under load. Honors Retry-After when the server
-// provides it; otherwise uses exponential backoff. Returns the final
-// Response (caller checks .ok), or rethrows the last network error.
+// Fetch with automatic retry on HTTP 429 (rate limit). Honors Retry-After when
+// the server provides it; otherwise uses exponential backoff. Returns the
+// final Response (caller checks .ok).
 async function fetchWithRetry(url, options = {}, maxRetries = 3) {
   let delayMs = 1000;
-  let lastErr;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const resp = await fetch(url, options);
-      if (resp.status !== 429 || attempt === maxRetries) return resp;
-      const retryAfter = parseFloat(resp.headers.get("Retry-After") || "");
-      const wait = Number.isFinite(retryAfter) ? retryAfter * 1000 : delayMs;
-      await new Promise(r => setTimeout(r, wait));
-      delayMs *= 2;
-    } catch (e) {
-      lastErr = e;
-      if (attempt === maxRetries) throw e;
-      await new Promise(r => setTimeout(r, delayMs));
-      delayMs *= 2;
-    }
+    const resp = await fetch(url, options);
+    if (resp.status !== 429 || attempt === maxRetries) return resp;
+    const retryAfter = parseFloat(resp.headers.get("Retry-After") || "");
+    const wait = Number.isFinite(retryAfter) ? retryAfter * 1000 : delayMs;
+    await new Promise(r => setTimeout(r, wait));
+    delayMs *= 2;
   }
-  if (lastErr) throw lastErr;
 }
 
 async function oaSearch(title, email) {
@@ -958,11 +947,8 @@ async function s2Search(title, apiKey) {
   const url = `${S2_BASE}?query=${encodeURIComponent(title)}&limit=10&fields=${encodeURIComponent(S2_FIELDS)}`;
   const headers = { "Accept": "application/json" };
   if (apiKey) headers["x-api-key"] = apiKey;
-  // S2's anonymous pool is extremely strict (~1 req/s shared globally) and
-  // often closes the connection instead of returning 429, surfacing as
-  // "TypeError: Failed to fetch". Retry with backoff handles both cases.
-  const resp = await fetchWithRetry(url, { headers });
-  if (!resp.ok) throw new Error(`Semantic Scholar HTTP ${resp.status}${apiKey ? "" : " (try adding an S2 API key)"}`);
+  const resp = await fetch(url, { headers });
+  if (!resp.ok) throw new Error(`Semantic Scholar HTTP ${resp.status}`);
   const data = await resp.json();
   return data.data || [];
 }
