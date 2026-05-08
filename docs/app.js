@@ -810,13 +810,23 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3, perAttemptTimeo
 }
 
 async function oaSearch(title, email) {
-  // OpenAlex "polite pool" — adding mailto= moves us off the shared anonymous
-  // bucket and gives ~10 req/s instead of frequent 429s.
+  // OpenAlex moved to a paid model in 2026: each request costs ~$0.001 and
+  // anonymous/polite-pool callers share a small daily free budget. When the
+  // budget is exhausted the API returns 429 with an "Insufficient budget"
+  // message — that's a billing failure, not a transient rate limit, so
+  // retrying won't help. We surface the real reason in the error string.
   const params = new URLSearchParams({ search: title, "per-page": "10" });
   if (email) params.set("mailto", email);
   const url = `${OA_BASE}?${params.toString()}`;
   const resp = await fetchWithRetry(url, { headers: { "Accept": "application/json" } });
-  if (!resp.ok) throw new Error(`OpenAlex HTTP ${resp.status}`);
+  if (!resp.ok) {
+    let detail = "";
+    try {
+      const body = await resp.json();
+      if (body && body.message) detail = `: ${body.message}`;
+    } catch {}
+    throw new Error(`OpenAlex HTTP ${resp.status}${detail}`);
+  }
   const data = await resp.json();
   return data.results || [];
 }
