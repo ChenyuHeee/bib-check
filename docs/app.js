@@ -604,8 +604,10 @@ function rewrite(entry, scholar) {
     if (FORBIDDEN_FIELDS.has(k) || !src[k]) continue;
     const valueChanged = src[k] !== entry.fields[k];
     if (!valueChanged && rawFieldLines[k]) {
-      // Ensure trailing comma (last original field may have lacked one).
+      // Ensure leading indent + trailing comma. The extractor strips leading
+      // whitespace, so re-add a 2-space indent for consistent formatting.
       let raw = rawFieldLines[k].replace(/\s*$/, "");
+      if (!/^\s/.test(raw)) raw = "  " + raw;
       if (!raw.endsWith(",")) raw += ",";
       lines.push(raw);
     } else {
