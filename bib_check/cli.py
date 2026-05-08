@@ -53,9 +53,25 @@ def main() -> None:
 )
 @click.option("--headless/--no-headless", default=False, show_default=True)
 @click.option(
-    "--skip-scholar",
+    "--use-scholar",
     is_flag=True,
-    help="Run local checks only; do not query Google Scholar.",
+    help="Fall back to Google Scholar (Playwright) when DBLP misses. "
+         "Off by default because Scholar throttles aggressively.",
+)
+@click.option(
+    "--skip-dblp",
+    is_flag=True,
+    help="Do not query DBLP.",
+)
+@click.option(
+    "--skip-openalex",
+    is_flag=True,
+    help="Do not query OpenAlex (primary source).",
+)
+@click.option(
+    "--skip-crossref",
+    is_flag=True,
+    help="Do not query Crossref.",
 )
 def audit_cmd(
     bib_file: Path,
@@ -63,7 +79,10 @@ def audit_cmd(
     keys: str | None,
     out_dir: Path,
     headless: bool,
-    skip_scholar: bool,
+    use_scholar: bool,
+    skip_dblp: bool,
+    skip_openalex: bool,
+    skip_crossref: bool,
 ) -> None:
     indices = _parse_range(range_spec)
     key_set = _parse_keys(keys)
@@ -76,7 +95,10 @@ def audit_cmd(
         selected_keys=key_set,
         cache_dir=cache_dir,
         headless=headless,
-        skip_scholar=skip_scholar,
+        use_scholar=use_scholar,
+        skip_dblp=skip_dblp,
+        skip_openalex=skip_openalex,
+        skip_crossref=skip_crossref,
     )
     if not audited:
         click.echo("No entries matched the selection.", err=True)
@@ -84,7 +106,13 @@ def audit_cmd(
 
     (out_dir / "report.md").write_text(render_report(audited), encoding="utf-8")
     (out_dir / "suggested.bib").write_text(render_bib(audited), encoding="utf-8")
+
+    by_source: dict[str, int] = {}
+    for a in audited:
+        by_source[a.source] = by_source.get(a.source, 0) + 1
     click.echo(f"Audited {len(audited)} entries.")
+    for src, n in sorted(by_source.items()):
+        click.echo(f"  matched via {src}: {n}")
     click.echo(f"  report:    {out_dir / 'report.md'}")
     click.echo(f"  suggested: {out_dir / 'suggested.bib'}")
 

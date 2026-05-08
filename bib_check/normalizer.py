@@ -35,6 +35,64 @@ FORBIDDEN_FIELDS = {
 
 ARXIV_VENUE_HINTS = ("corr", "arxiv", "preprint", "techrxiv", "authorea", "ssrn")
 
+# Common conference / journal acronym → full name. Used to expand abbreviated
+# `booktitle` / `journal` even when no online source is available.
+VENUE_FULL_NAME = {
+    "neurips": "Advances in Neural Information Processing Systems",
+    "nips": "Advances in Neural Information Processing Systems",
+    "icml": "International Conference on Machine Learning",
+    "iclr": "International Conference on Learning Representations",
+    "acl": "Annual Meeting of the Association for Computational Linguistics",
+    "emnlp": "Conference on Empirical Methods in Natural Language Processing",
+    "naacl": "Conference of the North American Chapter of the Association for Computational Linguistics",
+    "aaai": "AAAI Conference on Artificial Intelligence",
+    "ijcai": "International Joint Conference on Artificial Intelligence",
+    "colm": "Conference on Language Modeling",
+    "cvpr": "IEEE/CVF Conference on Computer Vision and Pattern Recognition",
+    "iccv": "IEEE/CVF International Conference on Computer Vision",
+    "eccv": "European Conference on Computer Vision",
+    "osdi": "USENIX Symposium on Operating Systems Design and Implementation",
+    "sosp": "ACM Symposium on Operating Systems Principles",
+    "nsdi": "USENIX Symposium on Networked Systems Design and Implementation",
+    "atc": "USENIX Annual Technical Conference",
+    "eurosys": "European Conference on Computer Systems",
+    "asplos": "International Conference on Architectural Support for Programming Languages and Operating Systems",
+    "isca": "International Symposium on Computer Architecture",
+    "micro": "IEEE/ACM International Symposium on Microarchitecture",
+    "hpca": "IEEE International Symposium on High-Performance Computer Architecture",
+    "fast": "USENIX Conference on File and Storage Technologies",
+    "vldb": "International Conference on Very Large Data Bases",
+    "sigmod": "ACM SIGMOD International Conference on Management of Data",
+    "kdd": "ACM SIGKDD Conference on Knowledge Discovery and Data Mining",
+    "www": "ACM Web Conference",
+    "sigir": "ACM SIGIR Conference on Research and Development in Information Retrieval",
+    "ccs": "ACM SIGSAC Conference on Computer and Communications Security",
+    "ndss": "Network and Distributed System Security Symposium",
+    "uss": "USENIX Security Symposium",
+    "sp": "IEEE Symposium on Security and Privacy",
+    "icse": "International Conference on Software Engineering",
+    "fse": "ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering",
+    "ase": "IEEE/ACM International Conference on Automated Software Engineering",
+    "issta": "International Symposium on Software Testing and Analysis",
+    "pldi": "ACM SIGPLAN Conference on Programming Language Design and Implementation",
+    "popl": "ACM SIGPLAN Symposium on Principles of Programming Languages",
+    "oopsla": "ACM SIGPLAN International Conference on Object-Oriented Programming, Systems, Languages, and Applications",
+    "uist": "ACM Symposium on User Interface Software and Technology",
+    "chi": "ACM CHI Conference on Human Factors in Computing Systems",
+    "tacl": "Transactions of the Association for Computational Linguistics",
+}
+
+
+def _expand_venue_acronym(venue: str) -> str:
+    """If the venue is a bare acronym we recognize, expand to full name."""
+    v = venue.strip()
+    # Strip trailing year tokens like "ICLR 2023".
+    m = re.match(r"^([A-Za-z]{2,8})(\s+\d{4})?$", v)
+    if not m:
+        return venue
+    key = m.group(1).lower()
+    return VENUE_FULL_NAME.get(key, venue)
+
 # arXiv-style "abs/2401.12345" pseudo-volume from DBLP/Scholar exports.
 _ARXIV_VOLUME_RE = re.compile(r"^\s*abs/\d{4}\.\d{4,5}\s*$", re.IGNORECASE)
 
@@ -108,6 +166,35 @@ def _has_etal(author: str) -> bool:
     )
 
 
+_NAME_PARTICLES = {"de", "del", "della", "der", "den", "van", "von", "la", "le", "di", "da", "du"}
+
+
+def _normalize_one_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        return name
+    # Already "Last, First" form.
+    if "," in name:
+        return name
+    parts = name.split()
+    if len(parts) < 2:
+        return name
+    # Walk from the end to gather a multi-token surname (e.g. "van den Driessche").
+    i = len(parts) - 1
+    while i > 0 and parts[i - 1].lower() in _NAME_PARTICLES:
+        i -= 1
+    given = " ".join(parts[:i])
+    family = " ".join(parts[i:])
+    if not given or not family:
+        return name
+    return f"{family}, {given}"
+
+
+def _normalize_authors(author_field: str) -> str:
+    parts = re.split(r"\s+and\s+", author_field.strip())
+    return " and ".join(_normalize_one_name(p) for p in parts if p.strip())
+
+
 def _venue_text(entry: BibEntry) -> str:
     return (entry.fields.get("booktitle") or entry.fields.get("journal") or "").strip()
 
@@ -158,14 +245,26 @@ def rewrite(entry: BibEntry, scholar: dict | None) -> str:
     for k in FORBIDDEN_FIELDS:
         src.pop(k, None)
 
+    # Expand bare acronym venues like "ICLR" / "NeurIPS" to full names so that
+    # standard "会议统一用全称不缩写" is met even when no online source matched.
+    if src.get("booktitle"):
+        src["booktitle"] = _expand_venue_acronym(src["booktitle"])
+    if src.get("journal"):
+        src["journal"] = _expand_venue_acronym(src["journal"])
+
+    # Normalize author list to "Last, First" form for consistency.
+    if src.get("author"):
+        src["author"] = _normalize_authors(src["author"])
+
     # Drop arXiv pseudo-volume (e.g. "abs/2401.12345") if we ended up on a
     # preprint venue and have no real volume/number from Scholar.
     journal = src.get("journal", "")
     if journal and _looks_like_arxiv(journal):
         if "volume" in src and _ARXIV_VOLUME_RE.match(src["volume"] or ""):
             src.pop("volume", None)
-        # arXiv has no issue number / pages.
-        for k in ("number", "pages"):
+        # arXiv has no issue number / pages, and the "Cornell University"
+        # publisher metadata returned by some sources is misleading.
+        for k in ("number", "pages", "publisher"):
             src.pop(k, None)
 
     # Decide entry type: prefer Scholar's, else infer from venue field.
