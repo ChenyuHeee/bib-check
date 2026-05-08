@@ -604,10 +604,9 @@ function rewrite(entry, scholar) {
     if (FORBIDDEN_FIELDS.has(k) || !src[k]) continue;
     const valueChanged = src[k] !== entry.fields[k];
     if (!valueChanged && rawFieldLines[k]) {
-      // Ensure leading indent + trailing comma. The extractor strips leading
-      // whitespace, so re-add a 2-space indent for consistent formatting.
+      // Reuse the original raw text byte-for-byte (preserves whatever indent
+      // the user had). Only ensure a trailing comma so we can append fields.
       let raw = rawFieldLines[k].replace(/\s*$/, "");
-      if (!/^\s/.test(raw)) raw = "  " + raw;
       if (!raw.endsWith(",")) raw += ",";
       lines.push(raw);
     } else {
@@ -632,15 +631,17 @@ function extractRawFieldLines(raw) {
   const out = {};
   if (!raw) return out;
   // Strip the @type{key, prefix and trailing }.
-  const inner = raw.replace(/^[\s\S]*?\{[^,]*,\s*/, "").replace(/\}\s*$/, "");
+  const inner = raw.replace(/^[\s\S]*?\{[^,]*,/, "").replace(/\}\s*$/, "");
   // Tokenize: walk char-by-char, tracking brace/quote depth so we know where
   // each field ends. Splitting on bare commas would break on `{a,b}`.
   let i = 0;
   while (i < inner.length) {
-    // Skip leading whitespace / commas.
-    while (i < inner.length && /[\s,]/.test(inner[i])) i++;
-    if (i >= inner.length) break;
+    // Capture leading whitespace as part of the field slice so the user's
+    // original indent is preserved verbatim on reuse.
     const fieldStart = i;
+    while (i < inner.length && /\s/.test(inner[i])) i++;
+    if (i >= inner.length) break;
+    if (inner[i] === ",") { i++; continue; }
     // Read field name: letters / digits / dashes up to '='.
     const eqMatch = /^([A-Za-z_][\w-]*)\s*=\s*/.exec(inner.slice(i));
     if (!eqMatch) { i++; continue; }
