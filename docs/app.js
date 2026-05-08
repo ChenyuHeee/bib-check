@@ -1120,53 +1120,62 @@ function renderEntry(a) {
   badges.push(`<span class="badge src-${a.source}">${a.source}</span>`);
   if (a.trusted) badges.push(`<span class="badge trusted" title="entry looks curated (DBLP source or full author names); aggregator data is only used to fill missing fields">trusted</span>`);
   if (a.upgradedFrom) badges.push(`<span class="badge upgraded" title="upgraded from ${escapeHtml(a.upgradedFrom)}">upgraded</span>`);
-  if (errs) badges.push(`<span class="badge err">${errs} err</span>`);
-  if (warns) badges.push(`<span class="badge warn">${warns} warn</span>`);
+  if (errs) badges.push(`<span class="badge err">${errs}</span>`);
+  if (warns) badges.push(`<span class="badge warn">${warns}</span>`);
   if (!errs && !warns) badges.push(`<span class="badge ok">clean</span>`);
   const unified = renderUnifiedDiff(e.raw.trim(), a.rewritten);
   const scholarUrl = scholarSearchURL(e);
+
   const matchHtml = a.match ? `
     <div class="section">
-      <h4>Match (${a.source})${a.upgradedFrom ? ` <span style="color:var(--muted);font-weight:normal">— upgraded from ${escapeHtml(a.upgradedFrom)}</span>` : ""}</h4>
+      <h4>Match <span class="badge src-${a.source}">${a.source}</span>${a.upgradedFrom ? ` <span style="color:var(--muted);font-weight:normal;text-transform:none;letter-spacing:0">— upgraded from ${escapeHtml(a.upgradedFrom)}</span>` : ""}</h4>
       <div class="match-meta">
-        <div class="k">title</div><div>${escapeHtml(a.match.title)}</div>
-        <div class="k">authors</div><div>${escapeHtml(a.match.authors?.join(", ") || "(none)")}</div>
-        <div class="k">year</div><div>${escapeHtml(a.match.year ?? "?")}</div>
-        <div class="k">venue</div><div>${escapeHtml(a.match.venue || "?")} <span style="color:var(--muted)">(${escapeHtml(a.match.venueKind || "?")})</span></div>
-        <div class="k">vol/num/pp</div><div>${escapeHtml(a.match.volume || "-")} / ${escapeHtml(a.match.number || "-")} / ${escapeHtml(a.match.pages || "-")}</div>
-        <div class="k">meta</div><div style="font-family:var(--mono);font-size:11px;color:var(--muted)">${escapeHtml(a.match.rawMeta || "")}</div>
+        <div class="row"><span class="k">title</span><span class="v">${escapeHtml(a.match.title)}</span></div>
+        <div class="row"><span class="k">authors</span><span class="v">${escapeHtml((a.match.authors || []).join(", ") || "(none)")}</span></div>
+        <div class="row"><span class="k">year</span><span class="v">${escapeHtml(String(a.match.year ?? "?"))}</span></div>
+        <div class="row"><span class="k">venue</span><span class="v">${escapeHtml(a.match.venue || "?")} <span style="color:var(--muted)">(${escapeHtml(a.match.venueKind || "?")})</span></span></div>
+        <div class="row"><span class="k">vol/num/pp</span><span class="v">${escapeHtml(String(a.match.volume || "-"))} / ${escapeHtml(String(a.match.number || "-"))} / ${escapeHtml(String(a.match.pages || "-"))}</span></div>
+        <div class="row"><span class="k">meta</span><span class="v trunc" title="${escapeHtml(a.match.rawMeta || "")}">${escapeHtml(a.match.rawMeta || "")}</span></div>
       </div>
     </div>` : "";
+
   const issuesHtml = visible.length ? `
     <div class="section">
       <h4>Issues</h4>
-      <ul class="issues">${visible.map(i => `<li class="sev-${i.severity}"><span class="badge ${i.severity === "error" ? "err" : i.severity === "warning" ? "warn" : "info"}">${i.severity}</span> ${i.field ? `<code>${escapeHtml(i.field)}</code>: ` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
+      <ul class="issues">${visible.map(i => `<li class="sev-${i.severity}"><span class="badge ${i.severity === "error" ? "err" : i.severity === "warning" ? "warn" : "info"}">${i.severity}</span>${i.field ? `<code>${escapeHtml(i.field)}</code>` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
     </div>` : "";
+
   const matchSection = a.match ? matchHtml : `
     <div class="section">
       <h4>Match</h4>
-      <p style="color:var(--muted)">No match found. Try <a href="${scholarUrl}" target="_blank" rel="noopener">Google Scholar search →</a></p>
+      <div class="no-match">No match found in OpenAlex, Crossref, or Semantic Scholar.
+        <a href="${scholarUrl}" target="_blank" rel="noopener">Search Google Scholar →</a>
+      </div>
     </div>`;
+
   const diffSection = hasChanges ? `
         <div class="section">
-          <h4>Diff (original → suggested)${a.additions && a.additions.length ? ` <span style="color:var(--muted);font-weight:normal">filled: ${escapeHtml(a.additions.join(", "))}</span>` : ""} <button class="copy-btn" data-copy="suggested">Copy suggested</button></h4>
+          <h4>Diff (original → suggested)${a.additions && a.additions.length ? ` <span style="color:var(--muted);font-weight:normal;text-transform:none;letter-spacing:0">filled: ${escapeHtml(a.additions.join(", "))}</span>` : ""} <button class="copy-btn" data-copy="suggested">Copy suggested</button></h4>
           ${unified}
           <pre class="bib hidden" data-suggested>${escapeHtml(a.rewritten)}</pre>
         </div>` : `
         <div class="section">
           <h4>Suggested</h4>
-          <p style="color:var(--muted)">No changes — original entry already complete (and not downgraded by aggregator data).</p>
+          <div class="no-changes">No changes — original entry already complete (not downgraded by aggregator data).</div>
         </div>`;
+
   return `
     <article class="entry" data-key="${escapeHtml(e.citeKey)}" data-errs="${errs}" data-warns="${warns}" data-infos="${infos}" data-trusted="${a.trusted ? "1" : "0"}" data-source="${a.source}">
       <div class="head">
-        <div class="title"><span class="idx">[${e.index}]</span><span class="key">${escapeHtml(e.citeKey)}</span><span style="color:var(--muted)">line ${e.lineNumber}</span></div>
+        <div class="title"><span class="chevron">▸</span><span class="idx">[${e.index}]</span><span class="key">${escapeHtml(e.citeKey)}</span><span class="meta">line ${e.lineNumber}</span></div>
         <div class="badges">${badges.join("")}</div>
       </div>
       <div class="body">
+        <div class="body-inner">
         ${issuesHtml}
         ${matchSection}
         ${diffSection}
+        </div>
       </div>
     </article>`;
 }
@@ -1182,20 +1191,20 @@ function renderSummary(audited) {
   const trusted = audited.filter(a => a.trusted).length;
   $("#summary").classList.remove("hidden");
   let html = `
-    <div class="card"><div class="n">${total}</div><div class="l">total</div></div>
-    <div class="card"><div class="n" style="color:var(--good)">${clean}</div><div class="l">clean</div></div>
-    <div class="card"><div class="n" style="color:var(--bad)">${errs}</div><div class="l">with errors</div></div>
-    <div class="card"><div class="n" style="color:var(--info,#58a6ff)">${trusted}</div><div class="l">trusted</div></div>
-    <div class="card"><div class="n" style="color:var(--accent)">${oa}</div><div class="l">via OpenAlex</div></div>
-    <div class="card"><div class="n" style="color:var(--good)">${cr}</div><div class="l">via Crossref</div></div>
-    <div class="card"><div class="n" style="color:var(--warn)">${s2}</div><div class="l">via S2</div></div>
-    <div class="card"><div class="n" style="color:var(--bad)">${none}</div><div class="l">unmatched</div></div>`;
+    <div class="card total"><div class="n">${total}</div><div class="l">total</div></div>
+    <div class="card clean"><div class="n">${clean}</div><div class="l">clean</div></div>
+    <div class="card errors"><div class="n">${errs}</div><div class="l">with errors</div></div>
+    <div class="card trusted"><div class="n">${trusted}</div><div class="l">trusted</div></div>
+    <div class="card oa"><div class="n">${oa}</div><div class="l">via OpenAlex</div></div>
+    <div class="card cr"><div class="n">${cr}</div><div class="l">via Crossref</div></div>
+    <div class="card s2"><div class="n">${s2}</div><div class="l">via S2</div></div>
+    <div class="card unmatched"><div class="n">${none}</div><div class="l">unmatched</div></div>`;
   const apiNotes = [];
   if (_apiFailures.openalex) apiNotes.push(`OpenAlex failed ${_apiFailures.openalex}×`);
   if (_apiFailures.crossref) apiNotes.push(`Crossref failed ${_apiFailures.crossref}×`);
   if (_apiFailures.s2) apiNotes.push(`Semantic Scholar failed ${_apiFailures.s2}× (silenced; check console)`);
   if (apiNotes.length) {
-    html += `<div class="card api-notes" style="grid-column:1/-1"><div class="l" style="text-align:left">API issues: ${apiNotes.join(" · ")}</div></div>`;
+    html += `<div class="card api-notes"><div class="l">API issues: ${apiNotes.join(" · ")}</div></div>`;
   }
   $("#summary").innerHTML = html;
 }
@@ -1218,6 +1227,9 @@ function parseRange(s, max) {
   return { a, b };
 }
 
+const CONCURRENCY = 3;
+const INTER_BATCH_MS = 150;
+
 async function runAudit() {
   const text = $("#bib").value;
   const entries = parseBib(text);
@@ -1232,10 +1244,9 @@ async function runAudit() {
   };
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
-  // Reset session-level API failure counters.
   _apiFailures.openalex = 0; _apiFailures.crossref = 0; _apiFailures.s2 = 0;
 
-  // Cross-entry duplicate detection (by normalized title) over the full file.
+  // Cross-entry duplicate detection
   const dupGroups = new Map();
   for (const e of entries) {
     const t = (e.fields.title || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
@@ -1249,9 +1260,13 @@ async function runAudit() {
   }
 
   const audited = [];
-  for (let i = 0; i < targets.length; i++) {
-    const e = targets[i];
-    setStatus(`Auditing ${i + 1} / ${targets.length}: ${e.citeKey}`, ((i) / targets.length) * 100);
+  let completed = 0;
+
+  function updateProgress() {
+    setStatus(`Auditing ${completed} / ${targets.length}`, (completed / targets.length) * 100);
+  }
+
+  async function processOne(e) {
     const a = await auditOne(e, opts);
     if (dupOf.has(e.citeKey)) {
       const others = dupOf.get(e.citeKey).filter(k => k !== e.citeKey);
@@ -1259,12 +1274,24 @@ async function runAudit() {
     }
     audited.push(a);
     $("#results").insertAdjacentHTML("beforeend", renderEntry(a));
-    // be polite to APIs
-    await new Promise(r => setTimeout(r, 150));
+    completed++;
+    updateProgress();
   }
+
+  // Process in concurrent batches
+  for (let i = 0; i < targets.length; i += CONCURRENCY) {
+    const batch = targets.slice(i, i + CONCURRENCY).map(processOne);
+    await Promise.all(batch);
+    if (i + CONCURRENCY < targets.length) {
+      await new Promise(r => setTimeout(r, INTER_BATCH_MS));
+    }
+  }
+
   setStatus(`Done. Audited ${audited.length} entries.`, 100);
   renderSummary(audited);
   setupExports(audited);
+  // Sort audited back to original order for exports/persistence
+  audited.sort((a, b) => a.entry.index - b.entry.index);
   saveState(text, opts, audited);
 }
 
@@ -1417,11 +1444,12 @@ function buildMarkdown(audited) {
 
 function setupExports(audited) {
   $("#exports").classList.remove("hidden");
-  $("#dlBib").onclick = () => download("suggested.bib", buildBib(audited), "application/x-bibtex");
-  $("#dlReport").onclick = () => download("report.json", buildJson(audited), "application/json");
-  $("#dlMd").onclick = () => download("report.md", buildMarkdown(audited), "text/markdown");
+  $("#dlBib").onclick = () => { download("suggested.bib", buildBib(audited), "application/x-bibtex"); showToast("Downloading suggested.bib"); };
+  $("#dlReport").onclick = () => { download("report.json", buildJson(audited), "application/json"); showToast("Downloading report.json"); };
+  $("#dlMd").onclick = () => { download("report.md", buildMarkdown(audited), "text/markdown"); showToast("Downloading report.md"); };
   $("#copyAll").onclick = async () => {
     await navigator.clipboard.writeText(buildBib(audited));
+    showToast("Copied all entries");
     const b = $("#copyAll"); const old = b.textContent;
     b.textContent = "Copied"; setTimeout(() => b.textContent = old, 1200);
   };
@@ -1458,22 +1486,121 @@ function applyFilters() {
   if (cnt) cnt.textContent = `showing ${shown} / ${total}`;
 }
 
+// ========== Toast ==========
+
+function showToast(message, duration = 2000) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.textContent = message;
+  $("#toastContainer").appendChild(el);
+  setTimeout(() => {
+    el.classList.add("out");
+    setTimeout(() => el.remove(), 250);
+  }, duration);
+}
+
+// ========== Sticky bar ==========
+
+function setupStickyBar() {
+  const bar = $("#stickyBar");
+  const sentinel = document.createElement("div");
+  sentinel.style.position = "absolute";
+  sentinel.style.height = "1px";
+  const input = document.querySelector(".input");
+  input.insertAdjacentElement("afterend", sentinel);
+  const obs = new IntersectionObserver(([e]) => {
+    bar.classList.toggle("stuck", !e.isIntersecting);
+  }, { threshold: 0 });
+  obs.observe(sentinel);
+}
+
+// ========== Drag-and-drop ==========
+
+function setupDragDrop() {
+  const overlay = $("#dropOverlay");
+  let dragCounter = 0;
+  document.addEventListener("dragenter", e => {
+    e.preventDefault();
+    dragCounter++;
+    if (dragCounter === 1) overlay.classList.add("active");
+  });
+  document.addEventListener("dragleave", () => {
+    dragCounter--;
+    if (dragCounter === 0) overlay.classList.remove("active");
+  });
+  document.addEventListener("dragover", e => e.preventDefault());
+  document.addEventListener("drop", async e => {
+    e.preventDefault();
+    dragCounter = 0;
+    overlay.classList.remove("active");
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (!file.name.endsWith(".bib") && !file.name.endsWith(".txt")) {
+      showToast("Please drop a .bib or .txt file");
+      return;
+    }
+    $("#bib").value = await file.text();
+    showToast(`Loaded ${file.name}`);
+  });
+}
+
+// ========== Keyboard shortcuts ==========
+
+function setupKeyboard() {
+  document.addEventListener("keydown", e => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key === "Enter") {
+      e.preventDefault();
+      runAudit();
+    }
+    if (mod && e.shiftKey && e.key === "F") {
+      e.preventDefault();
+      $("#range").focus();
+    }
+    if (e.key === "Escape") {
+      for (const el of document.querySelectorAll(".entry.open")) {
+        el.classList.remove("open");
+      }
+    }
+  });
+}
+
+// ========== Expand / collapse all ==========
+
+function setupExpandCollapse() {
+  $("#expandAll").addEventListener("click", () => {
+    for (const el of document.querySelectorAll(".entry")) el.classList.add("open");
+  });
+  $("#collapseAll").addEventListener("click", () => {
+    for (const el of document.querySelectorAll(".entry")) el.classList.remove("open");
+  });
+}
+
+// ========== Click handler ==========
+
 document.addEventListener("click", e => {
   const head = e.target.closest(".entry .head");
-  if (head) head.parentElement.classList.toggle("open");
+  if (head) {
+    const entry = head.parentElement;
+    entry.classList.toggle("open");
+  }
   const btn = e.target.closest(".copy-btn");
   if (btn) {
     const pre = btn.closest(".section").querySelector("[data-suggested]");
     navigator.clipboard.writeText(pre.textContent);
-    btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy", 1200);
+    btn.textContent = "Copied"; setTimeout(() => btn.textContent = "Copy suggested", 1200);
+    showToast("Copied to clipboard");
   }
 });
+
+// ========== Button wiring ==========
 
 $("#run").addEventListener("click", runAudit);
 $("#loadFile").addEventListener("click", () => $("#file").click());
 $("#file").addEventListener("change", async e => {
   const f = e.target.files[0]; if (!f) return;
   $("#bib").value = await f.text();
+  showToast(`Loaded ${f.name}`);
 });
 $("#loadSample").addEventListener("click", () => {
   $("#bib").value = `@article{kaplan2020scaling,
@@ -1491,10 +1618,11 @@ $("#loadSample").addEventListener("click", () => {
   booktitle = {ICLR},
   year = {2023}
 }`;
+  showToast("Sample loaded");
 });
 
-// Persist bib input as user edits (debounced) so refresh keeps text even
-// before running an audit.
+// ========== Persistence ==========
+
 let _bibSaveTimer = null;
 $("#bib").addEventListener("input", () => {
   clearTimeout(_bibSaveTimer);
@@ -1513,10 +1641,13 @@ $("#clearSaved").addEventListener("click", () => {
   clearState();
   $("#results").innerHTML = "";
   $("#summary").classList.add("hidden");
+  $("#exports").classList.add("hidden");
+  $("#filters").classList.add("hidden");
   setStatus("Saved state cleared.", 100);
 });
 
-// Filter controls — re-apply on any change. Cheap (CSS class toggles).
+// ========== Filter controls ==========
+
 for (const r of document.querySelectorAll("input[name=sevFilter]")) {
   r.addEventListener("change", applyFilters);
 }
@@ -1525,5 +1656,10 @@ for (const id of ["hideClean", "hideTrusted", "collapseInfo"]) {
   if (el) el.addEventListener("change", applyFilters);
 }
 
-// Restore previous session on page load.
+// ========== Init ==========
+
+setupStickyBar();
+setupDragDrop();
+setupKeyboard();
+setupExpandCollapse();
 restoreFromState();
