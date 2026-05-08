@@ -818,14 +818,16 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3, perAttemptTimeo
   if (lastErr) throw lastErr;
 }
 
-async function oaSearch(title, email) {
+async function oaSearch(title, email, apiKey) {
   // OpenAlex moved to a paid model in 2026: each request costs ~$0.001 and
   // anonymous/polite-pool callers share a small daily free budget. When the
   // budget is exhausted the API returns 429 with an "Insufficient budget"
   // message — that's a billing failure, not a transient rate limit, so
   // retrying won't help. We surface the real reason in the error string.
+  // Users with a paid plan can pass an api_key to draw from their own quota.
   const params = new URLSearchParams({ search: title, "per-page": "10" });
-  if (email) params.set("mailto", email);
+  if (apiKey) params.set("api_key", apiKey);
+  else if (email) params.set("mailto", email);
   const url = `${OA_BASE}?${params.toString()}`;
   const resp = await fetchWithRetry(url, { headers: { "Accept": "application/json" } });
   if (!resp.ok) {
@@ -898,15 +900,15 @@ function pickBest(targetTitle, hits, hint, threshold) {
   return best;
 }
 
-async function openalexLookup(title, hint, email) {
+async function openalexLookup(title, hint, email, apiKey) {
   try {
-    const hits = await oaSearch(title, email);
+    const hits = await oaSearch(title, email, apiKey);
     let r = pickBest(title, hits, hint, 75);
     if (!r) {
       // simplify: drop subtitle
       const colon = title.indexOf(":");
       if (colon > 10) {
-        const hits2 = await oaSearch(title.slice(0, colon), email);
+        const hits2 = await oaSearch(title.slice(0, colon), email, apiKey);
         r = pickBest(title.slice(0, colon), hits2, hint, 75);
       }
     }
@@ -1128,7 +1130,7 @@ async function auditOne(entry, opts) {
   }
 
   if (title && opts.useOpenalex) {
-    const r = await openalexLookup(title, hint, opts.email);
+    const r = await openalexLookup(title, hint, opts.email, opts.oaKey);
     if (r && r.__error) _recordApiFailure("openalex", r.__error, entry.citeKey);
     else if (r) { match = r; source = "openalex"; }
   }
@@ -1451,12 +1453,17 @@ function renderSummary(audited) {
       const list = _apiFailures.details[src] || [];
       if (!list.length) continue;
       detailRows.push(`<div class="api-fail-group"><strong>${src}</strong> (${list.length}):</div>`);
-      // If OpenAlex is failing and no polite-pool email is set, hint at it.
-      if (src === "openalex" && !($("#email")?.value || "").trim()) {
+      // If OpenAlex is failing and no API key is set, hint at it. Since 2026
+      // OpenAlex charges per request and the free daily budget is small, so
+      // a paid api_key is the only reliable fix once the budget is exhausted.
+      if (src === "openalex" && !($("#oaKey")?.value || "").trim()) {
+        const hasEmail = !!($("#email")?.value || "").trim();
         detailRows.push(`<div class="api-fail-row" style="background:rgba(255,200,0,0.08);border-left:3px solid #f5a623;padding:6px 10px;margin:4px 0;">
-          <strong>Tip:</strong> Add your email to the &ldquo;Email (OpenAlex polite pool)&rdquo; field above
-          to get ~10 req/s instead of the shared anonymous bucket. The email is sent only to OpenAlex per their
-          <a href="https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication" target="_blank" rel="noopener">polite pool policy</a>.
+          <strong>Tip:</strong> OpenAlex switched to a paid model in 2026 (~$0.001/request) with a small shared
+          free daily budget. If you see &ldquo;Insufficient budget&rdquo; errors, buy credits at
+          <a href="https://openalex.org/pricing" target="_blank" rel="noopener">openalex.org/pricing</a>
+          and paste your key into the &ldquo;OpenAlex API key&rdquo; field above.
+          ${hasEmail ? "" : `Otherwise add your email to the &ldquo;Email (OpenAlex polite pool)&rdquo; field for the free polite-pool quota.`}
         </div>`);
       }
       // If S2 is failing and no API key is set, add a hint with the
@@ -1528,6 +1535,7 @@ async function runAudit() {
     useCrossref: $("#useCrossref").checked,
     useS2: $("#useS2").checked,
     s2Key: $("#s2key").value.trim() || null,
+    oaKey: ($("#oaKey")?.value || "").trim() || null,
     email: ($("#email")?.value || "").trim() || null,
   };
   $("#results").innerHTML = "";
@@ -1646,6 +1654,7 @@ function restoreFromState() {
     if ("useCrossref" in s.opts) $("#useCrossref").checked = !!s.opts.useCrossref;
     if ("useS2" in s.opts) $("#useS2").checked = !!s.opts.useS2;
     if (s.opts.s2Key) $("#s2key").value = s.opts.s2Key;
+    if (s.opts.oaKey && $("#oaKey")) $("#oaKey").value = s.opts.oaKey;
     if (s.opts.email && $("#email")) $("#email").value = s.opts.email;
   }
   // Migrate: old payloads may still hold a huge `audited` array. Drop it
