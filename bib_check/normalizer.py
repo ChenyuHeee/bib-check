@@ -136,13 +136,15 @@ def detect_issues(entry: BibEntry) -> list[Issue]:
             )
         )
     elif entry.entry_type == "inproceedings" and _looks_abbreviated(venue):
-        issues.append(
-            Issue(
-                "warning",
-                "booktitle",
-                f"booktitle may be abbreviated ({venue!r}); use full conference name",
+        # Only warn if we don't have an automatic expansion for it.
+        if _expand_venue_acronym(venue) == venue:
+            issues.append(
+                Issue(
+                    "warning",
+                    "booktitle",
+                    f"booktitle may be abbreviated ({venue!r}); use full conference name",
+                )
             )
-        )
 
     # Journal completeness
     if entry.entry_type == "article" and not _looks_like_arxiv(venue):

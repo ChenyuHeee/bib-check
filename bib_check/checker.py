@@ -152,10 +152,13 @@ def render_report(audited: list[AuditedEntry]) -> str:
         e = a.entry
         lines.append(f"## [{e.index}] `{e.cite_key}` (line {e.line_number})")
         lines.append("")
-        if a.issues:
+        # Hide info-level "field will be stripped" notes — those are merely
+        # describing the normalization actions and pollute the report.
+        visible = [i for i in a.issues if i.severity in ("error", "warning")]
+        if visible:
             lines.append("**Issues**")
-            for iss in a.issues:
-                tag = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(iss.severity, "-")
+            for iss in visible:
+                tag = {"error": "❌", "warning": "⚠️"}.get(iss.severity, "-")
                 fld = f"`{iss.field}`: " if iss.field else ""
                 lines.append(f"- {tag} {fld}{iss.message}")
             lines.append("")
