@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>bib-check · live audit</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <h1>bib-check</h1>
+  <p class="tag">Paste a <code>.bib</code> file. We query OpenAlex + Crossref live, normalize authors, expand venue acronyms, and flag preprints.</p>
+</header>
+
+<main>
+  <section class="input">
+    <div class="row">
+      <label>BibTeX input
+        <textarea id="bib" placeholder="@article{kaplan2020scaling, author = {Kaplan, Jared and ...}, ...}" spellcheck="false"></textarea>
+      </label>
+      <div class="controls">
+        <button id="loadFile">Load .bib file…</button>
+        <input type="file" id="file" accept=".bib,.txt" hidden />
+        <button id="loadSample">Load sample</button>
+        <label class="opt"><input type="checkbox" id="useCrossref" checked /> Use Crossref</label>
+        <label class="opt"><input type="checkbox" id="useOpenalex" checked /> Use OpenAlex</label>
+        <label class="opt range">Range
+          <input type="text" id="range" placeholder="e.g. 1-50 (optional)" />
+        </label>
+        <button id="run" class="primary">Audit</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="status" class="status hidden"></section>
+
+  <section id="summary" class="summary hidden"></section>
+
+  <section id="results" class="results"></section>
+</main>
+
+<footer>
+  <p>Runs entirely in your browser. No bib content leaves your machine except the title + author hint sent to <a href="https://openalex.org">openalex.org</a> / <a href="https://www.crossref.org">crossref.org</a>.</p>
+</footer>
+
+<script src="app.js" type="module"></script>
+</body>
+</html>
