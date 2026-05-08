@@ -48,6 +48,19 @@
     <button id="copyAll">Copy all suggested entries</button>
   </section>
 
+  <section id="filters" class="filters hidden">
+    <span class="filters-label">Show:</span>
+    <label class="opt"><input type="radio" name="sevFilter" value="errors" /> errors only</label>
+    <label class="opt"><input type="radio" name="sevFilter" value="warnings" checked /> errors + warnings</label>
+    <label class="opt"><input type="radio" name="sevFilter" value="all" /> everything</label>
+    <span class="filters-sep">·</span>
+    <label class="opt"><input type="checkbox" id="hideClean" checked /> hide clean</label>
+    <label class="opt"><input type="checkbox" id="hideTrusted" /> hide trusted</label>
+    <label class="opt"><input type="checkbox" id="collapseInfo" checked /> collapse info notes</label>
+    <span class="filters-sep">·</span>
+    <span id="filterCount" class="filters-count"></span>
+  </section>
+
   <section id="results" class="results"></section>
 </main>
 

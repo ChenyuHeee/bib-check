@@ -212,3 +212,22 @@ footer {
   font-size: 12px;
 }
 footer a { color: var(--accent); }
+
+/* ===== Filter bar (P2-7) ===== */
+.filters {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 10px 14px; margin: 12px 0 0 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 13px;
+}
+.filters .filters-label { color: var(--muted); font-weight: 600; }
+.filters .filters-sep { color: var(--border); }
+.filters .filters-count { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.filters .opt { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.filters input[type=radio], .filters input[type=checkbox] { accent-color: var(--accent); }
+
+/* Hide entries the user filtered out (CSS-only, no re-render) */
+.entry.filtered { display: none; }
+
+/* When "collapse info notes" is on, hide info-level <li> in issues lists. */
+.results.collapse-info .issues > li.sev-info { display: none; }

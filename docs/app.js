@@ -1140,7 +1140,7 @@ function renderEntry(a) {
   const issuesHtml = visible.length ? `
     <div class="section">
       <h4>Issues</h4>
-      <ul>${visible.map(i => `<li><span class="badge ${i.severity === "error" ? "err" : i.severity === "warning" ? "warn" : "info"}">${i.severity}</span> ${i.field ? `<code>${escapeHtml(i.field)}</code>: ` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
+      <ul class="issues">${visible.map(i => `<li class="sev-${i.severity}"><span class="badge ${i.severity === "error" ? "err" : i.severity === "warning" ? "warn" : "info"}">${i.severity}</span> ${i.field ? `<code>${escapeHtml(i.field)}</code>: ` : ""}${escapeHtml(i.message)}</li>`).join("")}</ul>
     </div>` : "";
   const matchSection = a.match ? matchHtml : `
     <div class="section">
@@ -1158,7 +1158,7 @@ function renderEntry(a) {
           <p style="color:var(--muted)">No changes — original entry already complete (and not downgraded by aggregator data).</p>
         </div>`;
   return `
-    <article class="entry" data-key="${escapeHtml(e.citeKey)}">
+    <article class="entry" data-key="${escapeHtml(e.citeKey)}" data-errs="${errs}" data-warns="${warns}" data-infos="${infos}" data-trusted="${a.trusted ? "1" : "0"}" data-source="${a.source}">
       <div class="head">
         <div class="title"><span class="idx">[${e.index}]</span><span class="key">${escapeHtml(e.citeKey)}</span><span style="color:var(--muted)">line ${e.lineNumber}</span></div>
         <div class="badges">${badges.join("")}</div>
@@ -1425,6 +1425,37 @@ function setupExports(audited) {
     const b = $("#copyAll"); const old = b.textContent;
     b.textContent = "Copied"; setTimeout(() => b.textContent = old, 1200);
   };
+  $("#filters").classList.remove("hidden");
+  applyFilters();
+}
+
+// ========== View filters ==========
+
+function applyFilters() {
+  const sev = (document.querySelector("input[name=sevFilter]:checked") || {}).value || "warnings";
+  const hideClean = $("#hideClean").checked;
+  const hideTrusted = $("#hideTrusted").checked;
+  const collapseInfo = $("#collapseInfo").checked;
+  const root = $("#results");
+  // Toggle global class so CSS can hide info <li>s when collapseInfo is on.
+  root.classList.toggle("collapse-info", collapseInfo);
+  let shown = 0, total = 0;
+  for (const el of root.querySelectorAll(".entry")) {
+    total++;
+    const errs = +el.dataset.errs || 0;
+    const warns = +el.dataset.warns || 0;
+    const trusted = el.dataset.trusted === "1";
+    const isClean = errs === 0 && warns === 0;
+    let visible = true;
+    if (sev === "errors" && errs === 0) visible = false;
+    else if (sev === "warnings" && errs === 0 && warns === 0) visible = false;
+    if (visible && hideClean && isClean) visible = false;
+    if (visible && hideTrusted && trusted) visible = false;
+    el.classList.toggle("filtered", !visible);
+    if (visible) shown++;
+  }
+  const cnt = $("#filterCount");
+  if (cnt) cnt.textContent = `showing ${shown} / ${total}`;
 }
 
 document.addEventListener("click", e => {
@@ -1484,6 +1515,15 @@ $("#clearSaved").addEventListener("click", () => {
   $("#summary").classList.add("hidden");
   setStatus("Saved state cleared.", 100);
 });
+
+// Filter controls — re-apply on any change. Cheap (CSS class toggles).
+for (const r of document.querySelectorAll("input[name=sevFilter]")) {
+  r.addEventListener("change", applyFilters);
+}
+for (const id of ["hideClean", "hideTrusted", "collapseInfo"]) {
+  const el = document.getElementById(id);
+  if (el) el.addEventListener("change", applyFilters);
+}
 
 // Restore previous session on page load.
 restoreFromState();
